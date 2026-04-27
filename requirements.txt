@@ -1,0 +1,27 @@
+# Super Mario Bros PPO RL Project - Dependencias
+
+# Core Machine Learning
+torch>=2.0.0
+numpy>=1.24.0
+
+# Entorno de Juego
+gymnasium>=0.27.0
+# Para Super Mario Bros: instalar desde git o usar gym-super-mario-bros
+gym-super-mario-bros>=7.4.0
+nes-py>=8.2.1
+
+# Procesamiento de Video
+opencv-python>=4.8.0
+
+# Utilidades
+tensorboard>=2.14.0
+pillow>=10.0.0
+
+# Logging y Monitoreo (Opcional)
+wandb>=0.15.0  # Comentar si no se usa W&B
+pytest>=7.0.0  # Para testing (opcional)
+
+# Desarrollo (Opcional)
+ipython>=8.0.0
+jupyter>=1.0.0
+matplotlib>=3.7.0
