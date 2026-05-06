@@ -35,6 +35,7 @@ class PPOAgent:
         num_envs: int = 16,
         rollout_steps: int = 512,
         epochs_per_update: int = 3,
+        target_kl: Optional[float] = None,
         normalize_advantage: bool = True,
         normalize_reward: bool = True,
         clip_grad_norm: float = 0.5,
@@ -82,6 +83,7 @@ class PPOAgent:
         self.num_envs = num_envs
         self.rollout_steps = rollout_steps
         self.epochs_per_update = epochs_per_update
+        self.target_kl = target_kl
         self.normalize_advantage = normalize_advantage
         self.normalize_reward = normalize_reward
         self.clip_grad_norm = clip_grad_norm
@@ -188,6 +190,12 @@ class PPOAgent:
         else:
             self.lstm_hidden = reset_hidden_tensor(self.lstm_hidden)
 
+    def _freeze_batch_norm_stats(self):
+        """Mantiene BatchNorm en eval sin apagar gradientes del resto del modelo."""
+        for module in self.model.modules():
+            if isinstance(module, nn.modules.batchnorm._BatchNorm):
+                module.eval()
+
     def collect_rollout(self, env, progress_interval: int = 0) -> Tuple[float, int]:
         """
         Recolecta un rollout completo del entorno
@@ -199,6 +207,9 @@ class PPOAgent:
         Returns:
             Tupla (reward promedio, steps totales)
         """
+        was_training = self.model.training
+        self.model.eval()
+
         obs, _ = env.reset()
         obs_shape = self.observation_space.shape
         actual_num_envs = obs.shape[0] if obs.ndim == len(obs_shape) + 1 else 1
@@ -310,6 +321,9 @@ class PPOAgent:
         else:
             avg_reward = self.last_rollout_mean_reward
 
+        if was_training:
+            self.model.train()
+
         return avg_reward, self.total_steps
 
     def update(self) -> Dict[str, float]:
@@ -319,15 +333,23 @@ class PPOAgent:
         Returns:
             Diccionario con métricas de entrenamiento
         """
+        self.model.train()
+        self._freeze_batch_norm_stats()
+
         metrics = {
             "policy_loss": [],
             "value_loss": [],
             "entropy": [],
             "approx_kl": [],
+            "clip_fraction": [],
         }
+        kl_early_stop = False
+        epochs_ran = 0
+        optimizer_steps = 0
 
         # Múltiples épocas de entrenamiento
         for epoch in range(self.epochs_per_update):
+            epochs_ran += 1
             # Iterar sobre batches
             for batch_data in self.buffer.get_batch(self.batch_size, shuffle=True):
                 obs, actions, advantages, returns, values, old_log_probs = batch_data
@@ -348,6 +370,19 @@ class PPOAgent:
                         )
                         loss = policy_loss + self.value_loss_coeff * value_loss - self.entropy_coeff * entropy.mean()
 
+                    approx_kl, clip_fraction = self._compute_policy_stats(
+                        new_log_probs,
+                        old_log_probs,
+                    )
+                    if self._should_stop_for_kl(approx_kl):
+                        kl_early_stop = True
+                        metrics["policy_loss"].append(policy_loss.item())
+                        metrics["value_loss"].append(value_loss.item())
+                        metrics["entropy"].append(entropy.mean().item())
+                        metrics["approx_kl"].append(approx_kl)
+                        metrics["clip_fraction"].append(clip_fraction)
+                        break
+
                     self.optimizer.zero_grad()
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(self.optimizer)
@@ -364,19 +399,34 @@ class PPOAgent:
                     )
                     loss = policy_loss + self.value_loss_coeff * value_loss - self.entropy_coeff * entropy.mean()
 
+                    approx_kl, clip_fraction = self._compute_policy_stats(
+                        new_log_probs,
+                        old_log_probs,
+                    )
+                    if self._should_stop_for_kl(approx_kl):
+                        kl_early_stop = True
+                        metrics["policy_loss"].append(policy_loss.item())
+                        metrics["value_loss"].append(value_loss.item())
+                        metrics["entropy"].append(entropy.mean().item())
+                        metrics["approx_kl"].append(approx_kl)
+                        metrics["clip_fraction"].append(clip_fraction)
+                        break
+
                     self.optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                     self.optimizer.step()
+                optimizer_steps += 1
 
                 # Rastrear métricas
                 metrics["policy_loss"].append(policy_loss.item())
                 metrics["value_loss"].append(value_loss.item())
                 metrics["entropy"].append(entropy.mean().item())
-
-                # Aproximar KL divergence
-                approx_kl = (old_log_probs - new_log_probs).mean().item()
                 metrics["approx_kl"].append(approx_kl)
+                metrics["clip_fraction"].append(clip_fraction)
+
+            if kl_early_stop:
+                break
 
         # Resetear buffer
         self.buffer.reset()
@@ -384,10 +434,39 @@ class PPOAgent:
 
         # Promediar métricas
         avg_metrics = {
-            k: float(np.mean(v)) for k, v in metrics.items()
+            k: float(np.mean(v)) if v else 0.0 for k, v in metrics.items()
         }
+        avg_metrics["kl_early_stop"] = int(kl_early_stop)
+        avg_metrics["update_epochs_ran"] = epochs_ran
+        avg_metrics["optimizer_steps"] = optimizer_steps
+        avg_metrics["max_approx_kl"] = max(metrics["approx_kl"]) if metrics["approx_kl"] else 0.0
+        avg_metrics["max_clip_fraction"] = (
+            max(metrics["clip_fraction"]) if metrics["clip_fraction"] else 0.0
+        )
 
         return avg_metrics
+
+    def _compute_policy_stats(
+        self,
+        new_log_probs: torch.Tensor,
+        old_log_probs: torch.Tensor,
+    ) -> Tuple[float, float]:
+        """Calcula KL aproximado y fraccion de acciones clippeadas."""
+        with torch.no_grad():
+            log_ratio = (new_log_probs - old_log_probs).float()
+            ratio = torch.exp(log_ratio)
+            approx_kl = ((ratio - 1.0) - log_ratio).mean()
+            clip_fraction = ((ratio - 1.0).abs() > self.clip_range).float().mean()
+
+        return float(approx_kl.item()), float(clip_fraction.item())
+
+    def _should_stop_for_kl(self, approx_kl: float) -> bool:
+        """Detiene el update cuando PPO ya cambio demasiado la politica."""
+        return (
+            self.target_kl is not None
+            and self.target_kl > 0.0
+            and approx_kl > self.target_kl
+        )
 
     def _compute_policy_loss(
         self,

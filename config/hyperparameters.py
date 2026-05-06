@@ -32,18 +32,19 @@ VALUE_HIDDEN_DIM = 512
 
 # ==================== PPO HIPERPARÁMETROS ====================
 # Learning
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-4
 LEARNING_RATE_DECAY = True
 LEARNING_RATE_DECAY_STEPS = 50_000_000  # Decaimiento a lo largo del entrenamiento
 LR_FINAL_FACTOR = 0.1  # LR final = LR inicial * factor
 
 # Clipping y Normalización
-CLIP_RANGE = 0.1
-CLIP_RANGE_VF = 0.1  # Para value function
+CLIP_RANGE = 0.05
+CLIP_RANGE_VF = 0.05  # Para value function
 CLIP_GRAD_NORM = 0.5
 VALUE_LOSS_COEFF = 0.5
-ENTROPY_COEFF = 0.01
-ENTROPY_COEFF_DECAY = True
+ENTROPY_COEFF = 0.02
+ENTROPY_COEFF_DECAY = False
+TARGET_KL = 0.02
 
 # Ventaja y Recompensa
 GAMMA = 0.99  # Factor de descuento
@@ -56,7 +57,7 @@ REWARD_SCALE = 1.0
 ROLLOUT_STEPS = 512  # Pasos de recolección antes de update
 NUM_ENVS_PARALLEL = 16  # Ambientes paralelos
 BATCH_SIZE = 128  # Batch size para SGD
-EPOCHS_PER_UPDATE = 3  # Epocas dentro de cada update
+EPOCHS_PER_UPDATE = 2  # Epocas dentro de cada update
 SHUFFLE_BATCH = True
 
 # ==================== ENTRENAMIENTO ====================
