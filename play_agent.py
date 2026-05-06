@@ -2,6 +2,9 @@
 Script para ver al agente jugando Super Mario Bros en tiempo real
 Visualización interactiva del modelo entrenado
 """
+import os
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 import torch
 import numpy as np
 from pathlib import Path
@@ -101,7 +104,10 @@ def play(
 
     # Cargar checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint["model"])
+    model_state = checkpoint.get("model_state", checkpoint.get("model"))
+    if model_state is None:
+        raise KeyError("Checkpoint sin 'model_state' ni 'model'")
+    model.load_state_dict(model_state)
 
     print(f"Modelo cargado desde: {checkpoint_path}")
     print(f"Parámetros: {sum(p.numel() for p in model.parameters()):,}\n")
@@ -136,6 +142,8 @@ def play(
             # Obtener acción
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
+                if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in [1, 3, 4]:
+                    obs_tensor = obs_tensor.permute(0, 3, 1, 2)
                 action, lstm_hidden = model.get_action_deterministic(obs_tensor, lstm_hidden)
                 action = action.cpu().item()
 

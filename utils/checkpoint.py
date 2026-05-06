@@ -48,6 +48,8 @@ class CheckpointManager:
         checkpoint = {
             "step": step,
             "timestamp": datetime.now().isoformat(),
+            "model": model_state,
+            "optimizer": optimizer_state,
             "model_state": model_state,
             "optimizer_state": optimizer_state,
             "training_state": training_state,
@@ -69,6 +71,53 @@ class CheckpointManager:
 
         return checkpoint_path
 
+    def save_best_model(
+        self,
+        step: int,
+        model_state: Dict[str, Any],
+        optimizer_state: Dict[str, Any],
+        training_state: Dict[str, Any],
+        metrics: Dict[str, float] = None,
+        filename: str = "best_model.pt",
+    ) -> Path:
+        """
+        Guarda/reemplaza el mejor modelo sin crear checkpoints numerados extra.
+        """
+        checkpoint = {
+            "step": step,
+            "timestamp": datetime.now().isoformat(),
+            "model": model_state,
+            "optimizer": optimizer_state,
+            "model_state": model_state,
+            "optimizer_state": optimizer_state,
+            "training_state": training_state,
+            "metrics": metrics or {},
+        }
+
+        best_path = self.checkpoint_dir / filename
+        torch.save(checkpoint, best_path)
+
+        metadata_path = self.checkpoint_dir / f"{Path(filename).stem}_metadata.json"
+        serializable_metrics = {}
+        for key, value in checkpoint["metrics"].items():
+            if isinstance(value, (int, float, str, bool)):
+                serializable_metrics[key] = value
+            else:
+                serializable_metrics[key] = str(value)
+
+        with open(metadata_path, "w") as f:
+            json.dump(
+                {
+                    "step": step,
+                    "timestamp": checkpoint["timestamp"],
+                    "metrics": serializable_metrics,
+                },
+                f,
+                indent=2,
+            )
+
+        return best_path
+
     def load_checkpoint(
         self,
         checkpoint_path: Path,
@@ -86,13 +135,20 @@ class CheckpointManager:
             raise FileNotFoundError(f"Checkpoint no encontrado: {checkpoint_path}")
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        model_state = checkpoint.get("model_state", checkpoint.get("model"))
+        optimizer_state = checkpoint.get("optimizer_state", checkpoint.get("optimizer", {}))
+        training_state = checkpoint.get("training_state", {})
+        if "total_steps" in checkpoint and "total_steps" not in training_state:
+            training_state["total_steps"] = checkpoint["total_steps"]
+        if "update_count" in checkpoint and "update_count" not in training_state:
+            training_state["update_count"] = checkpoint["update_count"]
 
         return (
-            checkpoint["model_state"],
-            checkpoint["optimizer_state"],
-            checkpoint["training_state"],
+            model_state,
+            optimizer_state,
+            training_state,
             checkpoint.get("metrics", {}),
-            checkpoint["step"],
+            checkpoint.get("step", training_state.get("total_steps", 0)),
         )
 
     def load_latest_checkpoint(self) -> Optional[Tuple[Dict, Dict, Dict, Dict, int]]:

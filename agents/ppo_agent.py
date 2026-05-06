@@ -12,7 +12,7 @@ from pathlib import Path
 
 from models.actor_critic import create_actor_critic
 from agents.memory import create_rollout_buffer
-from utils.metrics import RunningMeanStd
+from utils.metrics import RewardNormalizer
 
 
 class PPOAgent:
@@ -118,42 +118,109 @@ class PPOAgent:
 
         # Normalización de recompensas
         if normalize_reward:
-            self.reward_normalizer = RunningMeanStd()
+            self.reward_normalizers = [
+                RewardNormalizer(gamma=gamma) for _ in range(num_envs)
+            ]
         else:
-            self.reward_normalizer = None
+            self.reward_normalizers = None
 
         # Tracking
         self.total_steps = 0
         self.update_count = 0
         self.episode_returns = []
         self.episode_lengths = []
+        self.last_rollout_mean_reward = 0.0
+        self.last_rollout_total_reward = 0.0
+        self.last_rollout_completed_episodes = 0
+        self.last_rollout_episode_returns = []
+        self.last_rollout_episode_lengths = []
 
         # LSTM hidden state
         self.lstm_hidden = None
 
-    def collect_rollout(self, env) -> Tuple[float, int]:
+    def _prepare_obs_tensor(self, obs: np.ndarray) -> torch.Tensor:
+        """Convierte observaciones NHWC/HWC al formato NCHW de la CNN."""
+        obs_tensor = torch.from_numpy(obs).to(self.device)
+        if obs_tensor.ndim == 3:
+            obs_tensor = obs_tensor.unsqueeze(0)
+
+        if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in [1, 3, 4]:
+            obs_tensor = obs_tensor.permute(0, 3, 1, 2)
+
+        return obs_tensor.float()
+
+    def _normalize_rewards(self, rewards: np.ndarray, dones: np.ndarray) -> np.ndarray:
+        """Normaliza recompensas escalares o vectorizadas."""
+        reward_array = np.asarray(rewards, dtype=np.float32)
+        if self.reward_normalizers is None:
+            return reward_array
+
+        original_shape = reward_array.shape
+        flat_rewards = reward_array.reshape(-1)
+        flat_dones = np.asarray(dones, dtype=np.bool_).reshape(-1)
+        normalized = np.empty_like(flat_rewards, dtype=np.float32)
+
+        for i, reward in enumerate(flat_rewards):
+            normalizer = self.reward_normalizers[min(i, len(self.reward_normalizers) - 1)]
+            normalized[i] = normalizer.normalize(float(reward))
+            if i < len(flat_dones) and flat_dones[i]:
+                normalizer.reset()
+
+        return normalized.reshape(original_shape)
+
+    def _reset_lstm_hidden_for_done(self, dones: np.ndarray):
+        """Limpia el estado recurrente de los entornos que terminaron."""
+        if self.lstm_hidden is None:
+            return
+
+        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=self.device).reshape(-1)
+        if not torch.any(done_mask):
+            return
+
+        def reset_hidden_tensor(hidden_tensor: torch.Tensor) -> torch.Tensor:
+            hidden_tensor = hidden_tensor.detach().clone()
+            if hidden_tensor.ndim >= 2 and hidden_tensor.shape[1] == done_mask.numel():
+                hidden_tensor[:, done_mask, ...] = 0
+            return hidden_tensor
+
+        if isinstance(self.lstm_hidden, tuple):
+            self.lstm_hidden = tuple(reset_hidden_tensor(tensor) for tensor in self.lstm_hidden)
+        else:
+            self.lstm_hidden = reset_hidden_tensor(self.lstm_hidden)
+
+    def collect_rollout(self, env, progress_interval: int = 0) -> Tuple[float, int]:
         """
         Recolecta un rollout completo del entorno
 
         Args:
             env: Entorno
+            progress_interval: Cada cuÃ¡ntos pasos imprimir progreso (0 desactiva)
 
         Returns:
             Tupla (reward promedio, steps totales)
         """
         obs, _ = env.reset()
+        obs_shape = self.observation_space.shape
+        actual_num_envs = obs.shape[0] if obs.ndim == len(obs_shape) + 1 else 1
 
-        episode_rewards = []
-        episode_length = 0
+        if actual_num_envs != self.num_envs:
+            raise ValueError(
+                f"El agente fue creado con num_envs={self.num_envs}, "
+                f"pero el entorno devolvio {actual_num_envs} observaciones"
+            )
+
+        episode_rewards = np.zeros(actual_num_envs, dtype=np.float32)
+        episode_lengths = np.zeros(actual_num_envs, dtype=np.int32)
+        rollout_rewards = []
+        rollout_episode_returns = []
+        rollout_episode_lengths = []
+        completed_episodes = 0
 
         for step in range(self.rollout_steps):
             # Obtener acción del modelo
             with torch.no_grad():
-                obs_tensor = torch.from_numpy(obs).to(self.device)
-                if obs_tensor.ndim == 3:
-                    obs_tensor = obs_tensor.unsqueeze(0)  # Agregar batch dim
-
-                action, log_prob, value, self.lstm_hidden = self.model.actor_critic.get_action_and_value(
+                obs_tensor = self._prepare_obs_tensor(obs)
+                action, log_prob, value, self.lstm_hidden = self.model.get_action_and_value(
                     obs_tensor,
                     self.lstm_hidden
                 )
@@ -163,43 +230,65 @@ class PPOAgent:
                 value = value.cpu().numpy()
 
             # Ejecutar acción en el entorno
-            next_obs, reward, done, info = env.step(action[0] if isinstance(action, np.ndarray) and action.ndim > 0 else action)
+            action_array = np.asarray(action, dtype=np.int64).reshape(-1)
+            if actual_num_envs == 1:
+                action_to_env = int(action_array[0])
+            else:
+                action_to_env = action_array
+
+            next_obs, reward, done, info = env.step(action_to_env)
+            reward_array = np.asarray(reward, dtype=np.float32).reshape(actual_num_envs)
+            done_array = np.asarray(done, dtype=np.bool_).reshape(actual_num_envs)
+            rollout_rewards.append(reward_array.copy())
 
             # Normalizar recompensa
-            if self.reward_normalizer is not None:
-                reward = self.reward_normalizer.normalize(float(reward))
+            normalized_reward = self._normalize_rewards(reward_array, done_array)
 
             # Añadir al buffer
             self.buffer.add(
                 obs=obs,
-                action=action[0] if isinstance(action, np.ndarray) and action.ndim > 0 else action,
-                reward=float(reward),
-                value=value[0] if isinstance(value, np.ndarray) and value.ndim > 0 else value,
-                log_prob=log_prob[0] if isinstance(log_prob, np.ndarray) and log_prob.ndim > 0 else log_prob,
-                done=float(done),
+                action=action_array,
+                reward=normalized_reward,
+                value=np.asarray(value, dtype=np.float32).reshape(actual_num_envs),
+                log_prob=np.asarray(log_prob, dtype=np.float32).reshape(actual_num_envs),
+                done=done_array.astype(np.float32),
             )
 
             # Tracking
-            episode_rewards.append(reward)
-            episode_length += 1
-            self.total_steps += 1
+            episode_rewards += reward_array
+            episode_lengths += 1
+            self.total_steps += actual_num_envs
 
             # Reset si el episodio terminó
-            if done:
-                self.episode_returns.append(sum(episode_rewards))
-                self.episode_lengths.append(episode_length)
-                episode_rewards = []
-                episode_length = 0
+            for env_idx, is_done in enumerate(done_array):
+                if is_done:
+                    episode_return = float(episode_rewards[env_idx])
+                    episode_length = int(episode_lengths[env_idx])
+                    self.episode_returns.append(episode_return)
+                    self.episode_lengths.append(episode_length)
+                    rollout_episode_returns.append(episode_return)
+                    rollout_episode_lengths.append(episode_length)
+                    episode_rewards[env_idx] = 0.0
+                    episode_lengths[env_idx] = 0
+                    completed_episodes += 1
+
+            if actual_num_envs == 1 and done_array[0]:
                 self.lstm_hidden = None
                 obs, _ = env.reset()
             else:
+                self._reset_lstm_hidden_for_done(done_array)
                 obs = next_obs
+
+            if progress_interval and (
+                (step + 1) % progress_interval == 0 or step + 1 == self.rollout_steps
+            ):
+                collected = (step + 1) * actual_num_envs
+                total = self.rollout_steps * actual_num_envs
+                print(f"  Rollout: {collected:,} / {total:,} transiciones", flush=True)
 
         # Calcular value del último estado
         with torch.no_grad():
-            obs_tensor = torch.from_numpy(obs).to(self.device)
-            if obs_tensor.ndim == 3:
-                obs_tensor = obs_tensor.unsqueeze(0)
+            obs_tensor = self._prepare_obs_tensor(obs)
             last_values = self.model.get_value(obs_tensor).cpu().numpy()
 
         # Computar ventajas y retornos
@@ -208,11 +297,18 @@ class PPOAgent:
             normalize_advantages=self.normalize_advantage
         )
 
+        rollout_rewards = np.concatenate(rollout_rewards) if rollout_rewards else np.array([0.0])
+        self.last_rollout_mean_reward = float(np.mean(rollout_rewards))
+        self.last_rollout_total_reward = float(np.sum(rollout_rewards))
+        self.last_rollout_completed_episodes = completed_episodes
+        self.last_rollout_episode_returns = rollout_episode_returns
+        self.last_rollout_episode_lengths = rollout_episode_lengths
+
         # Retornar statistics
-        if self.episode_returns:
+        if completed_episodes > 0 and self.episode_returns:
             avg_reward = np.mean(self.episode_returns[-100:])
         else:
-            avg_reward = 0.0
+            avg_reward = self.last_rollout_mean_reward
 
         return avg_reward, self.total_steps
 
@@ -235,6 +331,10 @@ class PPOAgent:
             # Iterar sobre batches
             for batch_data in self.buffer.get_batch(self.batch_size, shuffle=True):
                 obs, actions, advantages, returns, values, old_log_probs = batch_data
+
+                # Transponer observaciones de (batch, height, width, channels) a (batch, channels, height, width)
+                if obs.ndim == 4 and obs.shape[-1] in [1, 3, 4]:
+                    obs = obs.permute(0, 3, 1, 2)
 
                 # Forward pass
                 if self.use_mixed_precision:
@@ -352,10 +452,18 @@ class PPOAgent:
     def load(self, path: Path):
         """Carga el agente"""
         checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model"])
-        self.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.total_steps = checkpoint.get("total_steps", 0)
-        self.update_count = checkpoint.get("update_count", 0)
+        model_state = checkpoint.get("model_state", checkpoint.get("model"))
+        optimizer_state = checkpoint.get("optimizer_state", checkpoint.get("optimizer"))
+        if model_state is None:
+            raise KeyError("Checkpoint sin 'model_state' ni 'model'")
+
+        self.model.load_state_dict(model_state)
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
+
+        training_state = checkpoint.get("training_state", {})
+        self.total_steps = checkpoint.get("total_steps", training_state.get("total_steps", 0))
+        self.update_count = checkpoint.get("update_count", training_state.get("update_count", 0))
 
 
 def create_ppo_agent(

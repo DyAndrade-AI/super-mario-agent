@@ -2,6 +2,9 @@
 Script de entrenamiento principal para el agente PPO
 Orquesta la recolección de experiencias, actualización del modelo y evaluación
 """
+import os
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 import torch
 import numpy as np
 from pathlib import Path
@@ -187,6 +190,36 @@ def train(
 
     training_start_time = time.time()
     best_eval_reward = -float("inf")
+    best_model_score = -float("inf")
+
+    best_checkpoint = checkpoint_manager.load_best_checkpoint()
+    if best_checkpoint is not None:
+        best_model_state, _, _, best_metrics, _ = best_checkpoint
+        current_model_state = agent.model.state_dict()
+        compatible_best = best_model_state is not None and all(
+            key in current_model_state and current_model_state[key].shape == value.shape
+            for key, value in best_model_state.items()
+        )
+        if compatible_best:
+            best_model_score = float(
+                best_metrics.get(
+                    "best_score",
+                    best_metrics.get(
+                        "eval_reward",
+                        best_metrics.get("mean_episode_reward", -float("inf")),
+                    ),
+                )
+            )
+            best_eval_reward = float(best_metrics.get("eval_reward", best_eval_reward))
+        else:
+            print("best_model.pt existente incompatible con el modelo actual; se reemplazara al mejorar.")
+
+    def next_interval_after(step: int, interval: int) -> int:
+        return ((step // interval) + 1) * interval
+
+    next_checkpoint_step = next_interval_after(agent.total_steps, CHECKPOINT_FREQ)
+    next_eval_step = next_interval_after(agent.total_steps, EVAL_FREQ)
+    next_video_step = next_interval_after(agent.total_steps, SAVE_VIDEO_FREQ)
 
     try:
         while agent.total_steps < total_timesteps:
@@ -194,9 +227,11 @@ def train(
             print(f"\nRecolectando rollout... (Steps: {agent.total_steps:,} / {total_timesteps:,})")
             rollout_start = time.time()
 
-            avg_reward, _ = agent.collect_rollout(env)
+            avg_reward, _ = agent.collect_rollout(env, progress_interval=LOG_FREQ)
 
             rollout_time = time.time() - rollout_start
+            rollout_transitions = agent.rollout_steps * agent.num_envs
+            rollout_steps_per_sec = rollout_transitions / max(rollout_time, 1e-8)
             print(f"Rollout completado en {rollout_time:.2f}s")
 
             # Actualizar modelo
@@ -215,26 +250,67 @@ def train(
                 entropy=train_metrics["entropy"],
                 learning_rate=agent.optimizer.param_groups[0]["lr"],
             )
+            for episode_reward, episode_length in zip(
+                agent.last_rollout_episode_returns,
+                agent.last_rollout_episode_lengths,
+            ):
+                metrics_tracker.add_episode_metric(episode_reward, episode_length)
 
             # Log
             mean_metrics = metrics_tracker.get_mean_metrics()
             mean_metrics.update(train_metrics)
             mean_metrics["steps"] = agent.total_steps
+            mean_metrics["rollout_mean_reward"] = agent.last_rollout_mean_reward
+            mean_metrics["rollout_total_reward"] = agent.last_rollout_total_reward
+            mean_metrics["rollout_completed_episodes"] = agent.last_rollout_completed_episodes
+            mean_metrics["rollout_steps_per_sec"] = rollout_steps_per_sec
 
             logger.log_metrics(mean_metrics, step=agent.total_steps)
 
             # Print stats
             print(f"\nEstadísticas:")
             for key, value in mean_metrics.items():
-                if isinstance(value, float):
+                if isinstance(value, (int, np.integer)):
+                    print(f"  {key}: {value}")
+                elif isinstance(value, (float, np.floating)):
                     print(f"  {key}: {value:.6f}")
+
+            if agent.last_rollout_completed_episodes > 0:
+                current_score = float(mean_metrics["mean_episode_reward"])
+                score_source = "mean_episode_reward"
+            else:
+                current_score = float(agent.last_rollout_mean_reward)
+                score_source = "rollout_mean_reward"
+
+            if current_score > best_model_score:
+                best_model_score = current_score
+                best_metrics = dict(mean_metrics)
+                best_metrics["best_score"] = best_model_score
+                best_metrics["best_score_source"] = score_source
+                best_path = checkpoint_manager.save_best_model(
+                    step=agent.total_steps,
+                    model_state=agent.model.state_dict(),
+                    optimizer_state=agent.optimizer.state_dict(),
+                    training_state={
+                        "total_steps": agent.total_steps,
+                        "update_count": agent.update_count,
+                        "best_score": best_model_score,
+                        "best_score_source": score_source,
+                    },
+                    metrics=best_metrics,
+                    filename="best_model.pt",
+                )
+                print(
+                    f"Nuevo mejor modelo registrado ({score_source}: "
+                    f"{best_model_score:.6f}). Reemplazado: {best_path}"
+                )
 
             # Update LR scheduler
             if agent.scheduler is not None:
                 agent.scheduler.step()
 
             # Guardarprogreso periódicamente
-            if agent.total_steps % CHECKPOINT_FREQ == 0:
+            if agent.total_steps >= next_checkpoint_step:
                 print(f"\nGuardando checkpoint en step {agent.total_steps}...")
                 checkpoint_path = checkpoint_manager.save_checkpoint(
                     step=agent.total_steps,
@@ -249,16 +325,19 @@ def train(
                 )
                 print(f"Checkpoint guardado: {checkpoint_path}")
                 checkpoint_manager.cleanup_old_checkpoints(keep_last_n=5)
+                while next_checkpoint_step <= agent.total_steps:
+                    next_checkpoint_step += CHECKPOINT_FREQ
 
             # Evaluación
-            if agent.total_steps % EVAL_FREQ == 0:
+            if agent.total_steps >= next_eval_step:
                 print(f"\nEvaluando en step {agent.total_steps}...")
+                save_video_this_eval = agent.total_steps >= next_video_step
                 eval_reward = evaluate(
                     agent=agent,
                     world=world,
                     stage=stage,
                     num_episodes=EVAL_EPISODES,
-                    video_recorder=video_recorder if agent.total_steps % SAVE_VIDEO_FREQ == 0 else None,
+                    video_recorder=video_recorder if save_video_this_eval else None,
                     device=device,
                     render=render_eval,
                 )
@@ -269,18 +348,46 @@ def train(
                 # Guardar mejor modelo
                 if eval_reward > best_eval_reward:
                     best_eval_reward = eval_reward
-                    print(f"Nuevo mejor modelo! Reward: {eval_reward:.2f}")
-                    checkpoint_manager.save_checkpoint(
+                    print(f"Nuevo mejor modelo por evaluaciÃ³n! Reward: {eval_reward:.2f}")
+                    eval_metrics = dict(mean_metrics)
+                    eval_metrics["eval_reward"] = eval_reward
+                    eval_metrics["best_score"] = eval_reward
+                    eval_metrics["best_score_source"] = "eval_reward"
+                    checkpoint_manager.save_best_model(
                         step=agent.total_steps,
                         model_state=agent.model.state_dict(),
                         optimizer_state=agent.optimizer.state_dict(),
                         training_state={
                             "total_steps": agent.total_steps,
                             "update_count": agent.update_count,
+                            "best_score": eval_reward,
+                            "best_score_source": "eval_reward",
                         },
-                        metrics={"eval_reward": eval_reward},
-                        is_best=True,
+                        metrics=eval_metrics,
+                        filename="best_eval_model.pt",
                     )
+                    if eval_reward > best_model_score:
+                        best_model_score = eval_reward
+                        best_path = checkpoint_manager.save_best_model(
+                            step=agent.total_steps,
+                            model_state=agent.model.state_dict(),
+                            optimizer_state=agent.optimizer.state_dict(),
+                            training_state={
+                                "total_steps": agent.total_steps,
+                                "update_count": agent.update_count,
+                                "best_score": eval_reward,
+                                "best_score_source": "eval_reward",
+                            },
+                            metrics=eval_metrics,
+                            filename="best_model.pt",
+                        )
+                        print(f"Mejor modelo global reemplazado: {best_path}")
+
+                while next_eval_step <= agent.total_steps:
+                    next_eval_step += EVAL_FREQ
+                if save_video_this_eval:
+                    while next_video_step <= agent.total_steps:
+                        next_video_step += SAVE_VIDEO_FREQ
 
     except KeyboardInterrupt:
         print("\n\nEntrenamiento interrumpido por el usuario.")
@@ -349,6 +456,8 @@ def evaluate(
             # Obtener acción determinística
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
+                if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in [1, 3, 4]:
+                    obs_tensor = obs_tensor.permute(0, 3, 1, 2)
                 action, lstm_hidden = agent.model.get_action_deterministic(obs_tensor, lstm_hidden)
                 action = action.cpu().item()
 
