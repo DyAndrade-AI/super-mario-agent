@@ -1,352 +1,373 @@
-# Super Mario Bros - Agente PPO + CNN + LSTM
+# Super Mario Bros PPO Agent
 
-Un proyecto profesional de **Deep Reinforcement Learning** que entrena un agente PPO para jugar **Super Mario Bros** de forma autónoma usando visión por computadora (CNN) y memoria temporal (LSTM).
+Deep reinforcement learning project for training a PPO agent to play Super Mario Bros. The agent uses a convolutional visual encoder, optional recurrent memory, reward shaping, vectorized environment execution, checkpointing, and evaluation tools.
 
-## 🎯 Objetivo
+## Overview
 
-Desarrollar un agente de RL capaz de aprender estrategias de juego complejas en Super Mario Bros mediante:
-- **Algoritmo PPO**: Estable y eficiente en muestreo
-- **CNN Residual**: Extrae características visuales de los frames
-- **LSTM**: Proporciona memoria temporal para decision-making complejo
-- **Reward Shaping**: Incentivos personalizados para acelerar el aprendizaje
+This repository implements an end-to-end training pipeline for Super Mario Bros using:
 
-## 📋 Características Principales
+- Proximal Policy Optimization (PPO)
+- CNN-based visual feature extraction
+- LSTM memory for temporal context
+- Frame preprocessing, frame skipping, frame stacking, and normalization
+- Reward shaping for progress, coins, enemies, inactivity, death, and level completion
+- Multiprocessing-based vectorized environments
+- CUDA training with mixed precision when available
+- Periodic checkpointing and automatic best-model replacement
+- Evaluation and playback scripts
 
-✅ **Arquitectura Avanzada**
-- CNN con bloques residuales para extracción de características
-- LSTM recurrente para memoria temporal
-- Normalización y regularización de capas
-- Inicialización ortogonal de pesos
+The default training target is World 1-1.
 
-✅ **Algoritmo PPO Completo**
-- Clipping de ratio de probabilidad
-- Clipping de value function
-- Generalized Advantage Estimation (GAE)
-- Normalización de ventajas y recompensas
+## Current Status
 
-✅ **Entrenamiento Profesional**
-- Entornos paralelos para aceleración
-- Guardado automático de checkpoints
-- Evaluación periódica
-- Reanudación desde checkpoints
-- Mixed precision training (FP16) en GPU
+The current pipeline supports:
 
-✅ **Logging y Monitoreo**
-- TensorBoard para visualización
-- Weights & Biases (W&B) opcional
-- Grabación de videos del agente
-- Métricas detalladas de entrenamiento
+- Real `gym-super-mario-bros` environments through `nes-py`
+- `SuperMarioBros-*-*-v3` with `SIMPLE_MOVEMENT` action space
+- Parallel rollout collection through a custom `SubprocMarioVectorEnv`
+- GPU training on CUDA devices
+- Automatic saving of:
+  - `outputs/checkpoints/best_model.pt`
+  - `outputs/checkpoints/best_model_metadata.json`
+  - `outputs/checkpoints/best_eval_model.pt`
+  - `outputs/checkpoints/last_checkpoint.pt`
+  - periodic `checkpoint_step_*.pt` files
 
-✅ **Reward Shaping Inteligente**
-- Recompensa por progresión horizontal
-- Penalizaciones por inactividad
-- Recompensas por recoger monedas y matar enemigos
-- Curriculum learning por niveles
+Gym warnings about the old step API may appear because `gym-super-mario-bros` depends on older Gym APIs. The project includes compatibility wrappers for old and new step/reset formats.
 
-## 🛠️ Instalación
+## Repository Structure
 
-### Requisitos Previos
-- Python 3.8+
-- CUDA 11.8+ (para GPU, opcional pero recomendado)
-- 8GB+ RAM
-
-### Pasos de Instalación
-
-1. **Clonar/Descargar el repositorio**
-```bash
-cd super_mario
+```text
+super_mario/
+├── agents/
+│   ├── memory.py              # Rollout buffer and GAE support
+│   └── ppo_agent.py           # PPO implementation
+├── config/
+│   ├── config.py              # Project paths and training config helpers
+│   └── hyperparameters.py     # Training, PPO, model, and device settings
+├── env/
+│   ├── mario_env.py           # Single and parallel environment interfaces
+│   ├── mario_simulator.py     # Fallback simulator
+│   ├── reward_shaping.py      # Reward shaping logic
+│   └── wrappers.py            # Frame processing and multiprocessing vector env
+├── models/
+│   ├── actor_critic.py        # Actor-critic network
+│   ├── cnn_backbone.py        # CNN feature extractor
+│   ├── distributions.py       # Action distributions
+│   └── recurrent_module.py    # LSTM/GRU modules
+├── utils/
+│   ├── checkpoint.py          # Checkpoint save/load utilities
+│   ├── device.py              # CPU/GPU device selection
+│   ├── logger.py              # Metrics logging
+│   ├── metrics.py             # Metrics tracking
+│   └── video_recorder.py      # Video recording
+├── evaluate.py                # Evaluation script
+├── play_agent.py              # Playback script
+├── train.py                   # Main training script
+├── requirements.txt
+└── README.md
 ```
 
-2. **Crear entorno virtual** (recomendado)
-```bash
-python -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-```
+## Requirements
 
-3. **Instalar dependencias**
+Recommended environment:
+
+- Python 3.8 or newer
+- NVIDIA GPU with CUDA support for training acceleration
+- PyTorch with CUDA support
+- `gym-super-mario-bros`
+- `nes-py`
+- OpenCV
+- TensorBoard
+
+Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Verificar instalación**
-```bash
-python -c "import torch; print(f'PyTorch: {torch.__version__}')"
-python -c "from gymnasium_super_mario_bros import SuperMarioBrosEnv; print('Mario env OK')"
-```
-
-## 📁 Estructura del Proyecto
-
-```
-super_mario/
-├── config/                    # Configuración y hiperparámetros
-│   ├── hyperparameters.py    # Todos los hiperparámetros
-│   └── config.py             # Configuración del proyecto
-│
-├── env/                       # Entorno y wrappers
-│   ├── mario_env.py          # Wrapper principal del entorno
-│   ├── wrappers.py           # Wrappers de procesamiento
-│   └── reward_shaping.py     # Diseño de recompensas
-│
-├── models/                    # Arquitectura neural
-│   ├── cnn_backbone.py       # CNN con bloques residuales
-│   ├── recurrent_module.py   # LSTM/GRU para memoria
-│   ├── actor_critic.py       # Red Actor-Critic PPO
-│   └── distributions.py      # Distribuciones de probabilidad
-│
-├── agents/                    # Agente RL
-│   ├── ppo_agent.py          # Implementación de PPO
-│   └── memory.py             # Buffer de rollout y GAE
-│
-├── utils/                     # Utilidades
-│   ├── device.py             # Manejo de GPU/CPU
-│   ├── logger.py             # Logging y TensorBoard
-│   ├── checkpoint.py         # Guardado de checkpoints
-│   ├── metrics.py            # Rastreo de métricas
-│   └── video_recorder.py     # Grabación de videos
-│
-├── scripts/                   # Scripts auxiliares
-│   └── train_stage_*.py      # Entrenamiento por etapas
-│
-├── outputs/                   # Resultados
-│   ├── checkpoints/          # Modelos guardados
-│   ├── videos/               # Videos del agente
-│   ├── logs/                 # TensorBoard logs
-│   └── plots/                # Gráficas de entrenamiento
-│
-├── main.py                    # Entry point principal
-├── train.py                   # Script de entrenamiento
-├── evaluate.py               # Script de evaluación
-├── play_agent.py             # Visualización en tiempo real
-├── requirements.txt          # Dependencias
-└── README.md                 # Este archivo
-```
-
-## 🚀 Uso
-
-### 1. Entrenar desde Cero
+If using Conda, activate your environment before running the commands:
 
 ```bash
-python main.py train \
-  --world 1 \
-  --stage 1 \
-  --total-timesteps 50000000 \
-  --use-wandb
+conda activate dqn
 ```
 
-**Opciones disponibles:**
-- `--world`: Mundo (1-8)
-- `--stage`: Etapa (1-4)
-- `--total-timesteps`: Pasos totales de entrenamiento
-- `--checkpoint-dir`: Directorio para checkpoints
-- `--resume`: Reanudar desde checkpoint previo
-- `--use-wandb`: Usar Weights & Biases
-- `--no-tensorboard`: Desabilitar TensorBoard
-- `--seed`: Random seed
+## GPU Configuration
 
-### 2. Reanudar Entrenamiento
+The training, evaluation, and playback scripts set:
+
+```python
+CUDA_VISIBLE_DEVICES=0
+```
+
+This is intentional for machines with multiple NVIDIA cards where only one card is compatible with the installed PyTorch/CUDA build. In the current setup this selects the RTX A4000 and hides unsupported Quadro P620 devices.
+
+GPU usage is controlled in `config/hyperparameters.py`:
+
+```python
+USE_GPU = True
+DEVICE_ID = 0
+USE_MIXED_PRECISION = True
+```
+
+At startup, the training script prints the selected device. A correct CUDA run should show a line similar to:
+
+```text
+Dispositivo activo: cuda:0
+Usando GPU: True
+GPU Name: NVIDIA RTX A4000
+```
+
+## Training
+
+Run default training:
 
 ```bash
-python main.py train \
-  --resume outputs/checkpoints/best_model.pt \
-  --total-timesteps 100000000
+python train.py
 ```
 
-### 3. Evaluar Modelo
-
-```bash
-python main.py evaluate \
-  outputs/checkpoints/best_model.pt \
-  --episodes 10 \
-  --world 1 \
-  --stage 1
-```
-
-### 4. Ver Agente Jugando
-
-```bash
-python main.py play \
-  outputs/checkpoints/best_model.pt \
-  --episodes 3 \
-  --save-video \
-  --fps 30
-```
-
-### 5. Training Alternativo (Script directo)
+Run a specific world and stage:
 
 ```bash
 python train.py --world 1 --stage 1 --total-timesteps 50000000
 ```
 
-### 6. Evaluación Alternativa
+Resume from a checkpoint:
+
+```bash
+python train.py --resume outputs/checkpoints/last_checkpoint.pt
+```
+
+Resume from the best model:
+
+```bash
+python train.py --resume outputs/checkpoints/best_model.pt
+```
+
+## Checkpoints and Best Model Saving
+
+The training loop saves the best registered model automatically.
+
+Main files:
+
+- `outputs/checkpoints/best_model.pt`
+  - Replaced whenever the current training score improves.
+  - Intended for quick playback or evaluation.
+
+- `outputs/checkpoints/best_model_metadata.json`
+  - Contains the step, timestamp, score source, and metrics for the best model.
+
+- `outputs/checkpoints/best_eval_model.pt`
+  - Replaced whenever periodic evaluation achieves a new best evaluation score.
+
+- `outputs/checkpoints/last_checkpoint.pt`
+  - Updated whenever a regular checkpoint is saved.
+
+- `outputs/checkpoints/checkpoint_step_*.pt`
+  - Periodic checkpoints kept for recovery.
+
+Periodic checkpointing and evaluation are configured in `config/hyperparameters.py`:
+
+```python
+CHECKPOINT_FREQ = 500_000
+EVAL_FREQ = 50_000
+SAVE_VIDEO_FREQ = 1_000_000
+```
+
+The scheduler triggers when a threshold is crossed, not only when the step count exactly matches the frequency.
+
+## Evaluation
+
+Evaluate a trained checkpoint:
 
 ```bash
 python evaluate.py outputs/checkpoints/best_model.pt --episodes 10
 ```
 
-### 7. Visualización Alternativa
+Evaluate the best evaluation model:
 
 ```bash
-python play_agent.py outputs/checkpoints/best_model.pt --episodes 1 --save-video
+python evaluate.py outputs/checkpoints/best_eval_model.pt --episodes 10
 ```
 
-## 📊 Hiperparámetros Principales
+## Playback
 
-Editar `config/hyperparameters.py`:
+Run the trained agent:
+
+```bash
+python play_agent.py outputs/checkpoints/best_model.pt --episodes 1
+```
+
+Run and save video:
+
+```bash
+python play_agent.py outputs/checkpoints/best_model.pt --episodes 1 --save-video --fps 30
+```
+
+## Key Hyperparameters
+
+Edit `config/hyperparameters.py` to change training behavior.
+
+Environment:
 
 ```python
-# Entorno
-FRAME_WIDTH = 84              # Ancho del frame procesado
-FRAME_HEIGHT = 84             # Alto del frame procesado
-FRAME_STACK = 4               # Frames apilados (contexto temporal)
-
-# Arquitectura
-CNN_FEATURES = [32, 64, 64]  # Canales de CNN por capa
-LSTM_HIDDEN_DIM = 512         # Dimensión del hidden LSTM
-
-# PPO
-LEARNING_RATE = 3e-4
-GAMMA = 0.99                  # Factor de descuento
-GAE_LAMBDA = 0.95             # GAE lambda
-CLIP_RANGE = 0.1              # PPO clip
-ENTROPY_COEFF = 0.01          # Coeficiente de entropía
-
-# Entrenamiento
-BATCH_SIZE = 128
-NUM_ENVS_PARALLEL = 16        # Entornos paralelos
-ROLLOUT_STEPS = 512           # Pasos entre actualizaciones
-EPOCHS_PER_UPDATE = 3
-
-# Total
-TOTAL_TIMESTEPS = 50_000_000  # 50 millones de pasos
+WORLD = 1
+STAGE = 1
+FRAME_WIDTH = 84
+FRAME_HEIGHT = 84
+FRAME_STACK = 4
+FRAME_SKIP = 4
 ```
 
-## 📈 Monitoreo del Entrenamiento
+Model:
 
-### TensorBoard
+```python
+CNN_FEATURES = [32, 64, 64]
+USE_LSTM = True
+LSTM_HIDDEN_DIM = 512
+POLICY_HIDDEN_DIM = 512
+VALUE_HIDDEN_DIM = 512
+```
+
+PPO:
+
+```python
+LEARNING_RATE = 3e-4
+GAMMA = 0.99
+GAE_LAMBDA = 0.95
+CLIP_RANGE = 0.1
+ENTROPY_COEFF = 0.01
+```
+
+Rollout and optimization:
+
+```python
+NUM_ENVS_PARALLEL = 16
+ROLLOUT_STEPS = 512
+BATCH_SIZE = 128
+EPOCHS_PER_UPDATE = 3
+TOTAL_TIMESTEPS = 50_000_000
+```
+
+## Parallel Environment Execution
+
+The project uses a custom multiprocessing vector environment:
+
+```text
+SubprocMarioVectorEnv
+```
+
+It launches one Mario environment per process and returns batched observations, rewards, done flags, and info dictionaries.
+
+Expected training output:
+
+```text
+[OK] VectorEnv paralelo creado con 16 procesos
+```
+
+If the system cannot create the parallel environment, the code falls back to sequential environments. Sequential execution is significantly slower.
+
+## Monitoring
+
+TensorBoard:
 
 ```bash
 tensorboard --logdir outputs/logs
 ```
 
-Luego abrir en el navegador: http://localhost:6006
+Open:
 
-### Weights & Biases (W&B)
+```text
+http://localhost:6006
+```
+
+Important training metrics:
+
+- `mean_episode_reward`
+- `mean_episode_length`
+- `rollout_mean_reward`
+- `rollout_total_reward`
+- `rollout_completed_episodes`
+- `rollout_steps_per_sec`
+- `policy_loss`
+- `value_loss`
+- `entropy`
+- `approx_kl`
+
+## Troubleshooting
+
+### Training is using CPU
+
+Check `config/hyperparameters.py`:
+
+```python
+USE_GPU = True
+```
+
+Then run:
 
 ```bash
-pip install wandb
-wandb login
-python main.py train --use-wandb
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
 ```
 
-## 🎮 Interpretación de Resultados
+### CUDA or cuDNN errors with unsupported GPUs
 
-**Métricas clave:**
-- `mean_episode_reward`: Recompensa promedio (debe crecer)
-- `mean_value_loss`: Pérdida de value (debe bajar)
-- `mean_policy_loss`: Pérdida de política (debe bajar)
-- `mean_entropy`: Entropía de la política (indicador de exploración)
-- `max_x_pos`: Progreso horizontal máximo del agente
+If the machine has multiple GPUs and some are unsupported by the installed PyTorch build, restrict visible devices before importing PyTorch:
 
-**Señales de buen entrenamiento:**
-✅ Recompensa promedio incrementa constantemente
-✅ Pérdidas disminuyen
-✅ Agente alcanza cada vez posiciones más lejanas
-✅ Evita enemigos y obstáculos
+```powershell
+$env:CUDA_VISIBLE_DEVICES="0"
+python train.py
+```
 
-## 🔧 Solución de Problemas
+The scripts already set this by default with `os.environ.setdefault`.
 
-### Error: "gymnasium-super-mario-bros not found"
+### Training is slow
+
+Most rollout time is spent in the emulator, which runs on CPU. Confirm that parallel environments are active:
+
+```text
+[OK] VectorEnv paralelo creado con 16 procesos
+```
+
+If not, reduce or inspect:
+
+```python
+NUM_ENVS_PARALLEL
+ROLLOUT_STEPS
+```
+
+### Best model is not updating
+
+The best model is updated only when the selected score improves. Check:
+
+```text
+outputs/checkpoints/best_model_metadata.json
+```
+
+### Evaluation or playback fails to load a checkpoint
+
+Use one of:
+
 ```bash
-pip install gymnasium-super-mario-bros
+python evaluate.py outputs/checkpoints/best_model.pt --episodes 10
+python play_agent.py outputs/checkpoints/best_model.pt --episodes 1
 ```
 
-### Error: CUDA out of memory
-- Reducir `BATCH_SIZE` en `config/hyperparameters.py`
-- Reducir `NUM_ENVS_PARALLEL`
-- Usar `--no-mixed-precision` flag
+Both scripts support checkpoints that store weights under either `model` or `model_state`.
 
-### Entrenamiento muy lento
-- Usar GPU: Asegurar CUDA instalado correctamente
-- Aumentar `NUM_ENVS_PARALLEL` (si hay GPU/RAM disponible)
-- Reducir `EVAL_FREQ` para menos evaluaciones
+## References
 
-### Videos no se guardan
-- Instalar `opencv-python`: `pip install opencv-python`
-- Verificar permisos de escritura en `outputs/videos/`
+- Proximal Policy Optimization Algorithms: https://arxiv.org/abs/1707.06347
+- Playing Atari with Deep Reinforcement Learning: https://arxiv.org/abs/1312.5602
+- Generalized Advantage Estimation: https://arxiv.org/abs/1506.02438
+- Deep Residual Learning for Image Recognition: https://arxiv.org/abs/1512.03385
 
-## 🚀 Optimizaciones y Técnicas Avanzadas
+## License
 
-### 1. **Mixed Precision Training**
-Usar FP16 en GPU para mayor velocidad:
-```python
-USE_MIXED_PRECISION = True
-```
+Educational project. Use, modify, and extend according to your academic or research needs.
 
-### 2. **Reward Normalization**
-Normaliza recompensas acumulativas:
-```python
-NORMALIZE_REWARD = True
-```
+## Version
 
-### 3. **Learning Rate Decay**
-Reduce gradualmente el learning rate:
-```python
-LEARNING_RATE_DECAY = True
-LEARNING_RATE_DECAY_STEPS = 50_000_000
-LR_FINAL_FACTOR = 0.1
-```
-
-### 4. **Curriculum Learning**
-Entrenar primero en niveles fáciles:
-```python
-USE_CURRICULUM = True
-CURRICULUM_STAGES = [...]
-```
-
-### 5. **Clipping de Gradientes**
-Previene explosiones de gradiente:
-```python
-CLIP_GRAD_NORM = 0.5
-```
-
-## 📚 Referencias
-
-- **PPO**: [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347)
-- **DQN CNN**: [Playing Atari with Deep Reinforcement Learning](https://arxiv.org/abs/1312.5602)
-- **GAE**: [High-Dimensional Continuous Control Using Generalized Advantage Estimation](https://arxiv.org/abs/1506.02438)
-- **Residual Networks**: [Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)
-
-## 🎓 Aprendizajes Clave
-
-Este proyecto implementa técnicas de RL de nivel profesional:
-
-1. **Arquitecturas Profundas**: CNN residuales para visión, LSTM para memoria
-2. **Algoritmos Estables**: PPO con clipping y normalización
-3. **Eficiencia**: Entrenamiento paralelo, mixed precision, reward shaping
-4. **Reproducibilidad**: Seeds, checkpoints, logging completo
-5. **Escalabilidad**: Código modular, fácil de extender
-
-## 📝 Licencia
-
-Proyecto educativo. Libre de usar con fines académicos.
-
-## 🤝 Contribuciones
-
-Se aceptan mejoras y extensiones:
-- Soporte para más juegos
-- Algoritmos adicionales (A3C, IMPALA, R2D2)
-- Arquitecturas mejoradas
-- Mejor reward shaping
-
-## 📧 Contacto
-
-Para preguntas o sugerencias sobre este proyecto:
-- Consultar documentación del código
-- Revisar issues y PRs
-- Contactar al autor
-
----
-
-**Versión**: 1.0.0
-**Última actualización**: 2026-04-27
-**Status**: Producción ✅
+- Version: 1.1.0
+- Last updated: 2026-05-06
+- Status: Active development
