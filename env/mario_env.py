@@ -5,7 +5,10 @@ Integra wrappers y reward shaping
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import numpy as np
-import gym
+try:
+    import gym
+except ImportError:
+    import gymnasium as gym
 
 from .wrappers import create_mario_env, create_vectorized_env, InfoWrapper, unpack_step_result
 from .reward_shaping import MarioRewardShaper, create_reward_shaper
@@ -122,7 +125,7 @@ class MarioEnvironment:
 
     def render(self):
         """Renderiza el entorno"""
-        self.env.render()
+        return self.env.render()
 
     def close(self):
         """Cierra el entorno"""
@@ -263,6 +266,8 @@ class ParallelMarioEnvironment:
 
                 # Reset si terminó
                 if done:
+                    info = dict(info)
+                    info["terminal_observation"] = obs
                     reset_result = env.reset()
                     if isinstance(reset_result, tuple):
                         obs = reset_result[0]

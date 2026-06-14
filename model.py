@@ -1,25 +1,13 @@
 """
-ARCHIVO REEMPLAZADO - Arquitectura Profesional Completa
+Legacy import surface for the current Q-learning model.
 
-Este archivo ha sido reemplazado por una arquitectura profesional completa
-de Deep Reinforcement Learning con PPO + CNN + LSTM.
-
-NUEVAS UBICACIONES DE MODELOS:
-- CNN Residual Backbone: models/cnn_backbone.py
-- LSTM Recurrente: models/recurrent_module.py
-- Actor-Critic Network: models/actor_critic.py
-- PPO Agent: agents/ppo_agent.py
-
-IMPORTAR DESDE:
-    from models.actor_critic import create_actor_critic
-    from agents.ppo_agent import create_ppo_agent
-
-VER README.md para documentación completa.
+The active architecture lives in:
+- models/dueling_dqn.py
+- agents/dqn_agent.py
 """
 
-# Legacy import para compatibilidad (si es necesario)
 try:
-    from models.actor_critic import create_actor_critic
-    print("Modelos nuevos cargados desde models/actor_critic.py")
+    from models.dueling_dqn import DuelingDQNNetwork, create_dueling_dqn
+    print("Modelo Dueling DQN cargado desde models/dueling_dqn.py")
 except ImportError:
-    print("Usar: from models.actor_critic import create_actor_critic")
+    print("Usar: from models.dueling_dqn import create_dueling_dqn")

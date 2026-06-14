@@ -1,26 +1,25 @@
 """
-Script de entrenamiento principal para el agente PPO
-Orquesta la recolección de experiencias, actualización del modelo y evaluación
+Entrenamiento principal para Dueling Double DQN en Super Mario Bros.
 """
 import os
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
-import torch
-import numpy as np
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import time
-from datetime import datetime
+
+import numpy as np
+import torch
 
 from config.hyperparameters import *
-from config.config import get_project_paths, create_training_config
+from config.config import get_project_paths
 from utils.device import DeviceManager
 from utils.logger import MetricsLogger
 from utils.checkpoint import CheckpointManager
 from utils.metrics import MetricsTracker
 from utils.video_recorder import VideoRecorder
-from env.mario_env import create_environment
-from agents.ppo_agent import create_ppo_agent
+from agents.dqn_agent import create_dqn_agent
 
 
 def train(
@@ -34,43 +33,25 @@ def train(
     seed: int = SEED,
     render_eval: bool = False,
 ):
-    """
-    Entrena el agente PPO en Super Mario Bros
+    """Entrena un agente Dueling Double DQN en Super Mario Bros."""
 
-    Args:
-        world: Mundo de Super Mario
-        stage: Etapa del mundo
-        total_timesteps: Pasos totales de entrenamiento
-        checkpoint_dir: Directorio para checkpoints
-        resume_from_checkpoint: Cargar desde checkpoint previo
-        use_wandb: Usar Weights & Biases
-        use_tensorboard: Usar TensorBoard
-        seed: Random seed
-        render_eval: Renderizar durante evaluación
-    """
+    print("\n" + "=" * 80)
+    print("ENTRENAMIENTO DUELING DOUBLE DQN PARA SUPER MARIO BROS")
+    print("=" * 80 + "\n")
 
-    # ========== SETUP ==========
-    print("\n" + "="*80)
-    print("ENTRENAMIENTO DE AGENTE PPO PARA SUPER MARIO BROS")
-    print("="*80 + "\n")
-
-    # Paths
     project_paths = get_project_paths()
     if checkpoint_dir is None:
         checkpoint_dir = project_paths.CHECKPOINTS_DIR
 
-    # Device
     device_manager = DeviceManager(use_gpu=USE_GPU, device_id=DEVICE_ID)
     device = device_manager.get_device()
 
-    # Seed
     np.random.seed(seed)
     torch.manual_seed(seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
 
-    # Logger
-    experiment_name = f"mario_world{world}_stage{stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    experiment_name = f"mario_dqn_world{world}_stage{stage}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger = MetricsLogger(
         log_dir=project_paths.LOGS_DIR,
         experiment_name=experiment_name,
@@ -78,43 +59,42 @@ def train(
         use_tensorboard=use_tensorboard,
     )
 
-    # Log configuración
     config = {
+        "algorithm": "dueling_double_dqn",
         "world": world,
         "stage": stage,
         "total_timesteps": total_timesteps,
         "learning_rate": LEARNING_RATE,
         "gamma": GAMMA,
-        "gae_lambda": GAE_LAMBDA,
-        "clip_range": CLIP_RANGE,
-        "clip_range_vf": CLIP_RANGE_VF,
-        "entropy_coeff": ENTROPY_COEFF,
-        "target_kl": TARGET_KL,
+        "n_step_returns": N_STEP_RETURNS,
         "batch_size": BATCH_SIZE,
         "num_envs": NUM_ENVS_PARALLEL,
-        "rollout_steps": ROLLOUT_STEPS,
-        "epochs_per_update": EPOCHS_PER_UPDATE,
-        "use_lstm": USE_LSTM,
+        "collect_steps": COLLECT_STEPS,
+        "gradient_steps": GRADIENT_STEPS,
+        "replay_buffer_size": REPLAY_BUFFER_SIZE,
+        "learning_starts": LEARNING_STARTS,
+        "priority_alpha": PRIORITY_ALPHA,
+        "priority_beta_start": PRIORITY_BETA_START,
+        "target_update_interval": TARGET_UPDATE_INTERVAL,
+        "epsilon_start": EPSILON_START,
+        "epsilon_end": EPSILON_END,
+        "epsilon_decay_steps": EPSILON_DECAY_STEPS,
+        "use_noisy_nets": USE_NOISY_NETS,
         "use_mixed_precision": USE_MIXED_PRECISION,
         "device": str(device),
     }
     logger.log_config(config)
 
-    # Checkpoint manager
     checkpoint_manager = CheckpointManager(Path(checkpoint_dir))
-
-    # Metrics tracker
     metrics_tracker = MetricsTracker(window_size=100)
-
-    # Video recorder
     video_recorder = VideoRecorder(project_paths.VIDEOS_DIR)
 
     print(f"Experimento: {experiment_name}")
     print(f"Logs guardados en: {project_paths.LOGS_DIR}")
     print(f"Checkpoints guardados en: {checkpoint_dir}")
 
-    # ========== CREAR ENTORNO ==========
     print(f"\nCreando entorno: SuperMarioBros-{world}-{stage}...")
+    from env.mario_env import create_environment
 
     env = create_environment(
         world=world,
@@ -129,55 +109,52 @@ def train(
 
     observation_space = env.observation_space
     action_space = env.action_space
-
     print(f"Observation space: {observation_space}")
     print(f"Action space: {action_space}")
 
-    # ========== CREAR AGENTE ==========
-    print("\nCreando agente PPO...")
-
-    agent = create_ppo_agent(
+    print("\nCreando agente Dueling Double DQN...")
+    agent = create_dqn_agent(
         observation_space=observation_space,
         action_space=action_space,
         learning_rate=LEARNING_RATE,
         gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        clip_range=CLIP_RANGE,
-        clip_range_vf=CLIP_RANGE_VF,
-        entropy_coeff=ENTROPY_COEFF,
-        value_loss_coeff=VALUE_LOSS_COEFF,
         batch_size=BATCH_SIZE,
-        num_envs=NUM_ENVS_PARALLEL,
-        rollout_steps=ROLLOUT_STEPS,
-        epochs_per_update=EPOCHS_PER_UPDATE,
-        target_kl=TARGET_KL,
-        normalize_advantage=NORMALIZE_ADVANTAGE,
-        normalize_reward=NORMALIZE_REWARD,
+        replay_buffer_size=REPLAY_BUFFER_SIZE,
+        learning_starts=LEARNING_STARTS,
+        gradient_steps=GRADIENT_STEPS,
+        target_update_interval=TARGET_UPDATE_INTERVAL,
+        target_soft_update_tau=TARGET_SOFT_UPDATE_TAU,
+        n_step=N_STEP_RETURNS,
+        priority_alpha=PRIORITY_ALPHA,
+        priority_beta_start=PRIORITY_BETA_START,
+        priority_beta_frames=PRIORITY_BETA_FRAMES,
+        epsilon_start=EPSILON_START,
+        epsilon_end=EPSILON_END,
+        epsilon_decay_steps=EPSILON_DECAY_STEPS,
+        reward_scale=REWARD_SCALE,
+        reward_clip=REWARD_CLIP,
         clip_grad_norm=CLIP_GRAD_NORM,
         use_mixed_precision=USE_MIXED_PRECISION,
         device=device,
         cnn_features=CNN_FEATURES,
-        lstm_hidden_dim=LSTM_HIDDEN_DIM if USE_LSTM else 512,
-        policy_hidden_dim=POLICY_HIDDEN_DIM,
-        value_hidden_dim=VALUE_HIDDEN_DIM,
-        use_lstm=USE_LSTM,
+        hidden_dim=DQN_HIDDEN_DIM,
+        dueling_hidden_dim=DQN_DUELING_HIDDEN_DIM,
+        use_noisy_nets=USE_NOISY_NETS,
+        noisy_std_init=NOISY_STD_INIT,
         use_batch_norm=CNN_USE_BATCH_NORM,
         use_layer_norm=USE_LAYER_NORM,
     )
+    agent.collect_steps = COLLECT_STEPS
 
-    print(f"Modelo creado:")
-    print(f"  Parámetros totales: {sum(p.numel() for p in agent.model.parameters()):,}")
-    print(f"  Parámetros entrenables: {sum(p.numel() for p in agent.model.parameters() if p.requires_grad):,}")
+    print("Modelo creado:")
+    print(f"  Parametros totales: {sum(p.numel() for p in agent.model.parameters()):,}")
+    print(f"  Parametros entrenables: {sum(p.numel() for p in agent.model.parameters() if p.requires_grad):,}")
 
-    # ========== REANUDAR DESDE CHECKPOINT ==========
-    start_step = 0
     if resume_from_checkpoint is not None and Path(resume_from_checkpoint).exists():
         print(f"\nReanudando desde checkpoint: {resume_from_checkpoint}")
         agent.load(Path(resume_from_checkpoint))
-        start_step = agent.total_steps
-        print(f"Reanudando desde paso: {start_step}")
+        print(f"Reanudando desde paso: {agent.total_steps}")
 
-    # ========== SETUP LEARNING RATE SCHEDULER ==========
     if LEARNING_RATE_DECAY:
         def lr_lambda(step):
             progress = min(step / LEARNING_RATE_DECAY_STEPS, 1.0)
@@ -186,10 +163,9 @@ def train(
         from torch.optim.lr_scheduler import LambdaLR
         agent.scheduler = LambdaLR(agent.optimizer, lr_lambda)
 
-    # ========== LOOP DE ENTRENAMIENTO ==========
-    print("\n" + "="*80)
-    print("INICIANDO ENTRENAMIENTO")
-    print("="*80 + "\n")
+    print("\n" + "=" * 80)
+    print("INICIANDO ENTRENAMIENTO Q-LEARNING")
+    print("=" * 80 + "\n")
 
     training_start_time = time.time()
     best_eval_reward = -float("inf")
@@ -215,7 +191,7 @@ def train(
             )
             best_eval_reward = float(best_metrics.get("eval_reward", best_eval_reward))
         else:
-            print("best_model.pt existente incompatible con el modelo actual; se reemplazara al mejorar.")
+            print("best_model.pt existente incompatible con el DQN actual; se reemplazara al mejorar.")
 
     def next_interval_after(step: int, interval: int) -> int:
         return ((step // interval) + 1) * interval
@@ -226,64 +202,60 @@ def train(
 
     try:
         while agent.total_steps < total_timesteps:
-            # Recolectar rollout
-            print(f"\nRecolectando rollout... (Steps: {agent.total_steps:,} / {total_timesteps:,})")
-            rollout_start = time.time()
+            print(
+                f"\nRecolectando experiencia... "
+                f"(Steps: {agent.total_steps:,} / {total_timesteps:,})"
+            )
+            collection_start = time.time()
+            agent.collect_experience(env, progress_interval=LOG_FREQ)
+            collection_time = time.time() - collection_start
+            transitions = max(agent.last_collected_transitions, 1)
+            steps_per_sec = transitions / max(collection_time, 1e-8)
+            print(f"Experiencia recolectada en {collection_time:.2f}s")
 
-            avg_reward, _ = agent.collect_rollout(env, progress_interval=LOG_FREQ)
-
-            rollout_time = time.time() - rollout_start
-            rollout_transitions = agent.rollout_steps * agent.num_envs
-            rollout_steps_per_sec = rollout_transitions / max(rollout_time, 1e-8)
-            print(f"Rollout completado en {rollout_time:.2f}s")
-
-            # Actualizar modelo
-            print("Actualizando modelo...")
+            print("Actualizando Q-network...")
             update_start = time.time()
-
             train_metrics = agent.update()
-
             update_time = time.time() - update_start
             print(f"Update completado en {update_time:.2f}s")
 
-            # Añadir métricas
             metrics_tracker.add_training_metric(
-                value_loss=train_metrics["value_loss"],
-                policy_loss=train_metrics["policy_loss"],
-                entropy=train_metrics["entropy"],
+                q_loss=train_metrics["q_loss"],
+                td_error=train_metrics["td_error"],
+                q_value=train_metrics["q_value"],
+                epsilon=train_metrics["epsilon"],
                 learning_rate=agent.optimizer.param_groups[0]["lr"],
             )
             for episode_reward, episode_length in zip(
-                agent.last_rollout_episode_returns,
-                agent.last_rollout_episode_lengths,
+                agent.last_collection_episode_returns,
+                agent.last_collection_episode_lengths,
             ):
                 metrics_tracker.add_episode_metric(episode_reward, episode_length)
 
-            # Log
             mean_metrics = metrics_tracker.get_mean_metrics()
             mean_metrics.update(train_metrics)
             mean_metrics["steps"] = agent.total_steps
-            mean_metrics["rollout_mean_reward"] = agent.last_rollout_mean_reward
-            mean_metrics["rollout_total_reward"] = agent.last_rollout_total_reward
-            mean_metrics["rollout_completed_episodes"] = agent.last_rollout_completed_episodes
-            mean_metrics["rollout_steps_per_sec"] = rollout_steps_per_sec
+            mean_metrics["collection_mean_reward"] = agent.last_collection_mean_reward
+            mean_metrics["collection_total_reward"] = agent.last_collection_total_reward
+            mean_metrics["collection_completed_episodes"] = agent.last_collection_completed_episodes
+            mean_metrics["collection_steps_per_sec"] = steps_per_sec
+            mean_metrics["update_time_sec"] = update_time
 
             logger.log_metrics(mean_metrics, step=agent.total_steps)
 
-            # Print stats
-            print(f"\nEstadísticas:")
+            print("\nEstadisticas:")
             for key, value in mean_metrics.items():
                 if isinstance(value, (int, np.integer)):
                     print(f"  {key}: {value}")
                 elif isinstance(value, (float, np.floating)):
                     print(f"  {key}: {value:.6f}")
 
-            if agent.last_rollout_completed_episodes > 0:
+            if agent.last_collection_completed_episodes > 0:
                 current_score = float(mean_metrics["mean_episode_reward"])
                 score_source = "mean_episode_reward"
             else:
-                current_score = float(agent.last_rollout_mean_reward)
-                score_source = "rollout_mean_reward"
+                current_score = float(agent.last_collection_mean_reward)
+                score_source = "collection_mean_reward"
 
             if current_score > best_model_score:
                 best_model_score = current_score
@@ -297,22 +269,22 @@ def train(
                     training_state={
                         "total_steps": agent.total_steps,
                         "update_count": agent.update_count,
+                        "optimizer_steps": agent.optimizer_steps,
                         "best_score": best_model_score,
                         "best_score_source": score_source,
                     },
                     metrics=best_metrics,
                     filename="best_model.pt",
+                    extra_state=agent.get_checkpoint_extra_state(),
                 )
                 print(
                     f"Nuevo mejor modelo registrado ({score_source}: "
                     f"{best_model_score:.6f}). Reemplazado: {best_path}"
                 )
 
-            # Update LR scheduler
             if agent.scheduler is not None:
                 agent.scheduler.step()
 
-            # Guardarprogreso periódicamente
             if agent.total_steps >= next_checkpoint_step:
                 print(f"\nGuardando checkpoint en step {agent.total_steps}...")
                 checkpoint_path = checkpoint_manager.save_checkpoint(
@@ -322,16 +294,17 @@ def train(
                     training_state={
                         "total_steps": agent.total_steps,
                         "update_count": agent.update_count,
+                        "optimizer_steps": agent.optimizer_steps,
                     },
                     metrics=mean_metrics,
                     is_best=False,
+                    extra_state=agent.get_checkpoint_extra_state(),
                 )
                 print(f"Checkpoint guardado: {checkpoint_path}")
                 checkpoint_manager.cleanup_old_checkpoints(keep_last_n=5)
                 while next_checkpoint_step <= agent.total_steps:
                     next_checkpoint_step += CHECKPOINT_FREQ
 
-            # Evaluación
             if agent.total_steps >= next_eval_step:
                 print(f"\nEvaluando en step {agent.total_steps}...")
                 save_video_this_eval = agent.total_steps >= next_video_step
@@ -346,12 +319,11 @@ def train(
                 )
 
                 logger.log_scalar("eval/reward", eval_reward, step=agent.total_steps)
-                print(f"Reward de evaluación: {eval_reward:.2f}")
+                print(f"Reward de evaluacion: {eval_reward:.2f}")
 
-                # Guardar mejor modelo
                 if eval_reward > best_eval_reward:
                     best_eval_reward = eval_reward
-                    print(f"Nuevo mejor modelo por evaluaciÃ³n! Reward: {eval_reward:.2f}")
+                    print(f"Nuevo mejor modelo por evaluacion. Reward: {eval_reward:.2f}")
                     eval_metrics = dict(mean_metrics)
                     eval_metrics["eval_reward"] = eval_reward
                     eval_metrics["best_score"] = eval_reward
@@ -363,11 +335,13 @@ def train(
                         training_state={
                             "total_steps": agent.total_steps,
                             "update_count": agent.update_count,
+                            "optimizer_steps": agent.optimizer_steps,
                             "best_score": eval_reward,
                             "best_score_source": "eval_reward",
                         },
                         metrics=eval_metrics,
                         filename="best_eval_model.pt",
+                        extra_state=agent.get_checkpoint_extra_state(),
                     )
                     if eval_reward > best_model_score:
                         best_model_score = eval_reward
@@ -378,11 +352,13 @@ def train(
                             training_state={
                                 "total_steps": agent.total_steps,
                                 "update_count": agent.update_count,
+                                "optimizer_steps": agent.optimizer_steps,
                                 "best_score": eval_reward,
                                 "best_score_source": "eval_reward",
                             },
                             metrics=eval_metrics,
                             filename="best_model.pt",
+                            extra_state=agent.get_checkpoint_extra_state(),
                         )
                         print(f"Mejor modelo global reemplazado: {best_path}")
 
@@ -395,7 +371,6 @@ def train(
     except KeyboardInterrupt:
         print("\n\nEntrenamiento interrumpido por el usuario.")
 
-    # ========== CLEANUP ==========
     elapsed_time = time.time() - training_start_time
     print(f"\nTiempo total de entrenamiento: {elapsed_time / 3600:.2f} horas")
 
@@ -417,30 +392,21 @@ def evaluate(
     device: torch.device = None,
     render: bool = False,
 ) -> float:
-    """
-    Evalúa el agente
-
-    Args:
-        agent: Agente a evaluar
-        world: Mundo
-        stage: Etapa
-        num_episodes: Número de episodios
-        video_recorder: Grabador de video (opcional)
-        device: Dispositivo
-        render: Renderizar
-
-    Returns:
-        Recompensa promedio
-    """
+    """Evalua el agente con politica greedy sobre Q-values."""
     if device is None:
         device = torch.device("cpu")
 
-    # Crear entorno de evaluación
+    from env.mario_env import create_environment
+
     eval_env = create_environment(
         world=world,
         stage=stage,
         num_envs=1,
         parallel=False,
+        frame_size=FRAME_WIDTH,
+        num_frames=FRAME_STACK,
+        skip=FRAME_SKIP,
+        use_reward_shaping=False,
         render_mode="rgb_array" if render else None,
     )
 
@@ -450,24 +416,19 @@ def evaluate(
         obs, _ = eval_env.reset()
         episode_reward = 0.0
         done = False
-        lstm_hidden = None
+        info = {}
 
         if video_recorder is not None:
             video_recorder.start_recording(episode)
 
         while not done:
-            # Obtener acción determinística
             with torch.no_grad():
-                obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
-                if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in [1, 3, 4]:
-                    obs_tensor = obs_tensor.permute(0, 3, 1, 2)
-                action, lstm_hidden = agent.model.get_action_deterministic(obs_tensor, lstm_hidden)
-                action = action.cpu().item()
+                action = int(agent.select_actions(obs, evaluate=True)[0])
 
             obs, reward, done, info = eval_env.step(action)
             episode_reward += reward
 
-            if video_recorder is not None and hasattr(eval_env, 'render'):
+            if video_recorder is not None and hasattr(eval_env, "render"):
                 frame = eval_env.render()
                 if frame is not None:
                     video_recorder.add_frame(frame)
@@ -481,15 +442,13 @@ def evaluate(
             )
 
     eval_env.close()
-
-    avg_reward = float(np.mean(episode_rewards))
-    return avg_reward
+    return float(np.mean(episode_rewards))
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Entrena el agente PPO en Super Mario Bros")
+    parser = argparse.ArgumentParser(description="Entrena Dueling Double DQN en Super Mario Bros")
     parser.add_argument("--world", type=int, default=WORLD, help="Mundo de Super Mario")
     parser.add_argument("--stage", type=int, default=STAGE, help="Etapa del mundo")
     parser.add_argument("--total-timesteps", type=int, default=TOTAL_TIMESTEPS, help="Pasos totales")

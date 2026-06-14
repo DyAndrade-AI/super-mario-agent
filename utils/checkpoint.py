@@ -30,6 +30,7 @@ class CheckpointManager:
         training_state: Dict[str, Any],
         metrics: Dict[str, float] = None,
         is_best: bool = False,
+        extra_state: Dict[str, Any] = None,
     ) -> Path:
         """
         Guarda un checkpoint
@@ -55,6 +56,8 @@ class CheckpointManager:
             "training_state": training_state,
             "metrics": metrics or {},
         }
+        if extra_state:
+            checkpoint.update(extra_state)
 
         # Guardar checkpoint regular
         checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step:010d}.pt"
@@ -79,6 +82,7 @@ class CheckpointManager:
         training_state: Dict[str, Any],
         metrics: Dict[str, float] = None,
         filename: str = "best_model.pt",
+        extra_state: Dict[str, Any] = None,
     ) -> Path:
         """
         Guarda/reemplaza el mejor modelo sin crear checkpoints numerados extra.
@@ -93,6 +97,8 @@ class CheckpointManager:
             "training_state": training_state,
             "metrics": metrics or {},
         }
+        if extra_state:
+            checkpoint.update(extra_state)
 
         best_path = self.checkpoint_dir / filename
         torch.save(checkpoint, best_path)

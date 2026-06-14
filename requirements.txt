@@ -1,4 +1,4 @@
-# Super Mario Bros PPO RL Project - Dependencias
+# Super Mario Bros Dueling DQN RL Project - Dependencias
 
 # Core Machine Learning
 torch>=2.0.0

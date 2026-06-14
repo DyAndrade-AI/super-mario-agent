@@ -1,13 +1,10 @@
 """
 Entry point principal del proyecto
-Orquesta el training, evaluación y visualización
+Orquesta entrenamiento, evaluacion y visualizacion
 """
 import argparse
 import sys
 from pathlib import Path
-
-from train import train, evaluate
-from play_agent import play
 
 
 def main():
@@ -15,7 +12,7 @@ def main():
     Función principal con interfaz por línea de comandos
     """
     parser = argparse.ArgumentParser(
-        description="Sistema completo de entrenamiento para agente PPO en Super Mario Bros",
+        description="Sistema completo de entrenamiento Dueling DQN para Super Mario Bros",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos de uso:
@@ -83,8 +80,10 @@ Ejemplos de uso:
 
     # Ejecutar comando
     if args.command == "train":
+        from train import train
+
         print("\n" + "="*80)
-        print("INICIANDO ENTRENAMIENTO DEL AGENTE PPO")
+        print("INICIANDO ENTRENAMIENTO DEL AGENTE DUELING DQN")
         print("="*80)
 
         train(
@@ -99,6 +98,8 @@ Ejemplos de uso:
         )
 
     elif args.command == "evaluate":
+        from evaluate import evaluate
+
         if not Path(args.checkpoint).exists():
             print(f"Error: Checkpoint no encontrado: {args.checkpoint}")
             sys.exit(1)
@@ -117,6 +118,8 @@ Ejemplos de uso:
         )
 
     elif args.command == "play":
+        from play_agent import play
+
         if not Path(args.checkpoint).exists():
             print(f"Error: Checkpoint no encontrado: {args.checkpoint}")
             sys.exit(1)

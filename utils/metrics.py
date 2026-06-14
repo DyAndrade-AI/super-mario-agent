@@ -108,9 +108,10 @@ class MetricsTracker:
         self.metrics = {
             "episode_reward": deque(maxlen=window_size),
             "episode_length": deque(maxlen=window_size),
-            "value_loss": deque(maxlen=window_size),
-            "policy_loss": deque(maxlen=window_size),
-            "entropy": deque(maxlen=window_size),
+            "q_loss": deque(maxlen=window_size),
+            "td_error": deque(maxlen=window_size),
+            "q_value": deque(maxlen=window_size),
+            "epsilon": deque(maxlen=window_size),
             "learning_rate": deque(maxlen=window_size),
         }
 
@@ -127,23 +128,26 @@ class MetricsTracker:
 
     def add_training_metric(
         self,
-        value_loss: float,
-        policy_loss: float,
-        entropy: float,
+        q_loss: float,
+        td_error: float,
+        q_value: float,
+        epsilon: float,
         learning_rate: float,
     ):
         """
         Añade métrica de entrenamiento
 
         Args:
-            value_loss: Pérdida de valor
-            policy_loss: Pérdida de política
-            entropy: Entropía de la política
+            q_loss: Pérdida temporal-difference
+            td_error: Error TD absoluto medio
+            q_value: Q-value medio del batch
+            epsilon: Exploración epsilon-greedy actual
             learning_rate: Learning rate actual
         """
-        self.metrics["value_loss"].append(value_loss)
-        self.metrics["policy_loss"].append(policy_loss)
-        self.metrics["entropy"].append(entropy)
+        self.metrics["q_loss"].append(q_loss)
+        self.metrics["td_error"].append(td_error)
+        self.metrics["q_value"].append(q_value)
+        self.metrics["epsilon"].append(epsilon)
         self.metrics["learning_rate"].append(learning_rate)
 
     def get_mean_metrics(self) -> Dict[str, float]:
@@ -158,12 +162,14 @@ class MetricsTracker:
             if self.metrics["episode_reward"] else 0.0,
             "mean_episode_length": float(np.mean(self.metrics["episode_length"]))
             if self.metrics["episode_length"] else 0.0,
-            "mean_value_loss": float(np.mean(self.metrics["value_loss"]))
-            if self.metrics["value_loss"] else 0.0,
-            "mean_policy_loss": float(np.mean(self.metrics["policy_loss"]))
-            if self.metrics["policy_loss"] else 0.0,
-            "mean_entropy": float(np.mean(self.metrics["entropy"]))
-            if self.metrics["entropy"] else 0.0,
+            "mean_q_loss": float(np.mean(self.metrics["q_loss"]))
+            if self.metrics["q_loss"] else 0.0,
+            "mean_td_error": float(np.mean(self.metrics["td_error"]))
+            if self.metrics["td_error"] else 0.0,
+            "mean_q_value": float(np.mean(self.metrics["q_value"]))
+            if self.metrics["q_value"] else 0.0,
+            "mean_epsilon": float(np.mean(self.metrics["epsilon"]))
+            if self.metrics["epsilon"] else 0.0,
             "last_learning_rate": float(self.metrics["learning_rate"][-1])
             if self.metrics["learning_rate"] else 0.0,
         }

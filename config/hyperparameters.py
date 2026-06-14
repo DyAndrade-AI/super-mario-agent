@@ -1,6 +1,6 @@
 """
-Hiperparámetros de entrenamiento para el agente PPO + CNN + LSTM
-Diseñados para aprovechar recursos computacionales potentes
+Hiperparametros de entrenamiento para Dueling Double DQN.
+Diseñados para aprendizaje Q off-policy con replay priorizado.
 """
 
 # ==================== ENTORNO ====================
@@ -19,46 +19,49 @@ CNN_FEATURES = [32, 64, 64]
 CNN_KERNEL_SIZES = [8, 4, 3]
 CNN_STRIDES = [4, 2, 1]
 CNN_PADDINGS = [0, 0, 0]
-CNN_USE_BATCH_NORM = True
+CNN_USE_BATCH_NORM = False
 
-# LSTM
-USE_LSTM = True
-LSTM_HIDDEN_DIM = 512
-LSTM_NUM_LAYERS = 1
+# Dueling Q-network
+DQN_HIDDEN_DIM = 512
+DQN_DUELING_HIDDEN_DIM = 512
+USE_NOISY_NETS = True
+NOISY_STD_INIT = 0.5
 
-# Policy Head
-POLICY_HIDDEN_DIM = 512
-VALUE_HIDDEN_DIM = 512
-
-# ==================== PPO HIPERPARÁMETROS ====================
+# ==================== DQN HIPERPARAMETROS ====================
 # Learning
 LEARNING_RATE = 1e-4
 LEARNING_RATE_DECAY = True
 LEARNING_RATE_DECAY_STEPS = 50_000_000  # Decaimiento a lo largo del entrenamiento
 LR_FINAL_FACTOR = 0.1  # LR final = LR inicial * factor
 
-# Clipping y Normalización
-CLIP_RANGE = 0.05
-CLIP_RANGE_VF = 0.05  # Para value function
-CLIP_GRAD_NORM = 0.5
-VALUE_LOSS_COEFF = 0.5
-ENTROPY_COEFF = 0.02
-ENTROPY_COEFF_DECAY = False
-TARGET_KL = 0.02
-
-# Ventaja y Recompensa
+# Q-learning
 GAMMA = 0.99  # Factor de descuento
-GAE_LAMBDA = 0.95  # Generalized Advantage Estimation
-NORMALIZE_ADVANTAGE = True
-NORMALIZE_REWARD = True
+N_STEP_RETURNS = 3
+CLIP_GRAD_NORM = 10.0
 REWARD_SCALE = 1.0
+REWARD_CLIP = 10.0
 
-# Batch
-ROLLOUT_STEPS = 512  # Pasos de recolección antes de update
-NUM_ENVS_PARALLEL = 16  # Ambientes paralelos
-BATCH_SIZE = 128  # Batch size para SGD
-EPOCHS_PER_UPDATE = 2  # Epocas dentro de cada update
-SHUFFLE_BATCH = True
+# Replay priorizado
+REPLAY_BUFFER_SIZE = 150_000
+LEARNING_STARTS = 20_000
+PRIORITY_ALPHA = 0.6
+PRIORITY_BETA_START = 0.4
+PRIORITY_BETA_FRAMES = 5_000_000
+
+# Exploracion epsilon-greedy. Si USE_NOISY_NETS=True, epsilon decae a un valor bajo.
+EPSILON_START = 1.0
+EPSILON_END = 0.02
+EPSILON_DECAY_STEPS = 1_000_000
+
+# Target network
+TARGET_UPDATE_INTERVAL = 10_000
+TARGET_SOFT_UPDATE_TAU = 1.0
+
+# Recoleccion y optimizacion
+COLLECT_STEPS = 128  # Pasos de entorno antes de cada bloque de updates
+NUM_ENVS_PARALLEL = 8  # Ambientes paralelos
+BATCH_SIZE = 128
+GRADIENT_STEPS = 128  # Updates por bloque de recoleccion
 
 # ==================== ENTRENAMIENTO ====================
 TOTAL_TIMESTEPS = 50_000_000  # 50M steps de entrenamiento
@@ -70,12 +73,7 @@ CHECKPOINT_FREQ = 500_000  # Guardar checkpoint cada 500k pasos
 SAVE_VIDEO_FREQ = 1_000_000  # Guardar video cada 1M pasos
 SAVE_VIDEO_LENGTH = 4500  # Duración del video
 
-# ==================== TÉCNICAS AVANZADAS ====================
-# Curiosity Driven Exploration (RND)
-USE_CURIOSITY = False
-CURIOSITY_COEFF = 0.01
-CURIOSITY_LEARNING_RATE = 1e-3
-
+# ==================== TECNICAS AVANZADAS ====================
 # Normalización
 USE_LAYER_NORM = True
 USE_BATCH_NORM_INPUT = False  # No usar en input layer de CNN

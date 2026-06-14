@@ -1,225 +1,69 @@
 """
-Memory buffer para recolección de experiencias en PPO
-Almacena observaciones, acciones, recompensas y otros datos
+Replay memory for off-policy Q-learning.
 """
+from typing import Dict, Tuple
+
 import numpy as np
 import torch
-from typing import Tuple, Optional, List
-from collections import deque
 
 
-class RolloutBuffer:
+def _as_uint8_observation(obs: np.ndarray) -> np.ndarray:
+    obs_array = np.asarray(obs)
+    if obs_array.dtype == np.uint8:
+        return obs_array
+
+    if np.issubdtype(obs_array.dtype, np.floating):
+        obs_array = obs_array * 255.0 if obs_array.max(initial=0.0) <= 1.0 else obs_array
+
+    return np.clip(obs_array, 0, 255).astype(np.uint8)
+
+
+def _uint8_to_tensor(obs: np.ndarray, device: torch.device) -> torch.Tensor:
+    tensor = torch.from_numpy(obs).to(device=device, dtype=torch.float32).div_(255.0)
+    if tensor.ndim == 4 and tensor.shape[-1] in (1, 3, 4):
+        tensor = tensor.permute(0, 3, 1, 2).contiguous()
+    return tensor
+
+
+class PrioritizedReplayBuffer:
     """
-    Buffer para almacenar rollouts (experiencias consecutivas)
-    Optimizado para PPO con Generalized Advantage Estimation (GAE)
+    Proportional prioritized replay buffer.
+
+    Observations are stored as uint8 to keep Atari-style frame stacks practical.
     """
 
     def __init__(
         self,
-        buffer_size: int,
-        obs_shape: Tuple,
-        action_shape: Tuple = (),
-        num_envs: int = 1,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        device: torch.device = None,
+        capacity: int,
+        obs_shape: Tuple[int, ...],
+        device: torch.device,
+        alpha: float = 0.6,
+        beta_start: float = 0.4,
+        beta_frames: int = 1_000_000,
+        priority_eps: float = 1e-6,
     ):
-        """
-        Inicializa el buffer de rollout
+        if capacity <= 0:
+            raise ValueError("capacity debe ser mayor que cero")
 
-        Args:
-            buffer_size: Tamaño del buffer
-            obs_shape: Shape de observaciones
-            action_shape: Shape de acciones
-            num_envs: Número de entornos paralelos
-            gamma: Factor de descuento
-            gae_lambda: Parámetro lambda para GAE
-            device: Dispositivo (CPU/GPU)
-        """
-        self.buffer_size = buffer_size
-        self.obs_shape = obs_shape
-        self.action_shape = action_shape
-        self.num_envs = num_envs
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.device = device or torch.device("cpu")
+        self.capacity = int(capacity)
+        self.obs_shape = tuple(obs_shape)
+        self.device = device
+        self.alpha = float(alpha)
+        self.beta_start = float(beta_start)
+        self.beta_frames = int(beta_frames)
+        self.priority_eps = float(priority_eps)
+
+        self.observations = np.empty((self.capacity, *self.obs_shape), dtype=np.uint8)
+        self.next_observations = np.empty((self.capacity, *self.obs_shape), dtype=np.uint8)
+        self.actions = np.empty((self.capacity,), dtype=np.int64)
+        self.rewards = np.empty((self.capacity,), dtype=np.float32)
+        self.discounts = np.empty((self.capacity,), dtype=np.float32)
+        self.dones = np.empty((self.capacity,), dtype=np.bool_)
+        self.priorities = np.zeros((self.capacity,), dtype=np.float32)
+
         self.pos = 0
-        self.full = False
-
-        # Buffers
-        self.observations = np.zeros((buffer_size, num_envs) + obs_shape, dtype=np.float32)
-        self.actions = np.zeros((buffer_size, num_envs) + action_shape, dtype=np.int64)
-        self.rewards = np.zeros((buffer_size, num_envs), dtype=np.float32)
-        self.values = np.zeros((buffer_size, num_envs), dtype=np.float32)
-        self.log_probs = np.zeros((buffer_size, num_envs), dtype=np.float32)
-        self.dones = np.zeros((buffer_size, num_envs), dtype=np.float32)
-        self.advantages = np.zeros((buffer_size, num_envs), dtype=np.float32)
-        self.returns = np.zeros((buffer_size, num_envs), dtype=np.float32)
-
-        # Para LSTM: guardar hidden states
-        self.lstm_hiddens = None
-
-    def add(
-        self,
-        obs: np.ndarray,
-        action: np.ndarray,
-        reward: np.ndarray,
-        value: np.ndarray,
-        log_prob: np.ndarray,
-        done: np.ndarray,
-        lstm_hidden: Optional[Tuple] = None,
-    ):
-        """
-        Añade una experiencia al buffer
-
-        Args:
-            obs: Observación
-            action: Acción
-            reward: Recompensa
-            value: Value estimado
-            log_prob: Log probability de la acción
-            done: Señal de término de episodio
-            lstm_hidden: Hidden state del LSTM (opcional)
-        """
-        self.observations[self.pos] = obs
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.values[self.pos] = value
-        self.log_probs[self.pos] = log_prob
-        self.dones[self.pos] = done
-
-        if lstm_hidden is not None:
-            if self.lstm_hiddens is None:
-                # Inicializar lista de hidden states
-                self.lstm_hiddens = []
-            self.lstm_hiddens.append(lstm_hidden)
-
-        self.pos += 1
-        if self.pos == self.buffer_size:
-            self.full = True
-            self.pos = 0
-
-    def compute_advantages_and_returns(
-        self,
-        last_values: np.ndarray,
-        normalize_advantages: bool = True,
-    ):
-        """
-        Calcula ventajas y retornos usando Generalized Advantage Estimation
-
-        Args:
-            last_values: Values de los últimos estados
-            normalize_advantages: Normalizar las ventajas
-        """
-        # Inicializar gae y next_value
-        gae = np.zeros((self.num_envs,), dtype=np.float32)
-        next_value = last_values
-
-        # Iterar hacia atrás
-        for t in reversed(range(self.buffer_size)):
-            if t == self.buffer_size - 1:
-                next_nonterminal = 1.0 - self.dones[t]
-                next_value = last_values
-            else:
-                next_nonterminal = 1.0 - self.dones[t]
-                next_value = self.values[t + 1]
-
-            delta = self.rewards[t] + self.gamma * next_value * next_nonterminal - self.values[t]
-            gae = delta + self.gamma * self.gae_lambda * next_nonterminal * gae
-
-            self.advantages[t] = gae
-            self.returns[t] = gae + self.values[t]
-
-        # Normalizar ventajas
-        if normalize_advantages:
-            self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
-
-    def get_batch(
-        self,
-        batch_size: int,
-        shuffle: bool = True,
-    ) -> Tuple:
-        """
-        Obtiene un batch de experiencias
-
-        Args:
-            batch_size: Tamaño del batch
-            shuffle: Mezclar datos
-
-        Returns:
-            Tupla con tensores de batch
-        """
-        # Preparar índices
-        indices = np.arange(self.buffer_size * self.num_envs)
-
-        # Reshape para flat indexing
-        obs = self.observations.reshape(-1, *self.obs_shape)
-        actions = self.actions.reshape(-1, *self.action_shape)
-        rewards = self.rewards.reshape(-1)
-        values = self.values.reshape(-1)
-        log_probs = self.log_probs.reshape(-1)
-        dones = self.dones.reshape(-1)
-        advantages = self.advantages.reshape(-1)
-        returns = self.returns.reshape(-1)
-
-        if shuffle:
-            np.random.shuffle(indices)
-
-        # Crear batches
-        for start_idx in range(0, len(indices), batch_size):
-            batch_indices = indices[start_idx:start_idx + batch_size]
-
-            # Convertir a tensores
-            batch_obs = torch.from_numpy(obs[batch_indices]).to(self.device)
-            batch_actions = torch.from_numpy(actions[batch_indices]).to(self.device)
-            batch_advantages = torch.from_numpy(advantages[batch_indices]).to(self.device)
-            batch_returns = torch.from_numpy(returns[batch_indices]).to(self.device)
-            batch_values = torch.from_numpy(values[batch_indices]).to(self.device)
-            batch_log_probs = torch.from_numpy(log_probs[batch_indices]).to(self.device)
-
-            yield batch_obs, batch_actions, batch_advantages, batch_returns, batch_values, batch_log_probs
-
-    def reset(self):
-        """Resetea el buffer"""
-        self.pos = 0
-        self.full = False
-        self.observations.fill(0)
-        self.actions.fill(0)
-        self.rewards.fill(0)
-        self.values.fill(0)
-        self.log_probs.fill(0)
-        self.dones.fill(0)
-        self.advantages.fill(0)
-        self.returns.fill(0)
-        self.lstm_hiddens = None
-
-    def is_full(self) -> bool:
-        """Verifica si el buffer está lleno"""
-        return self.pos == 0 and self.full
-
-
-class ExperienceBuffer:
-    """Buffer simple para almacenar experiencias sin computar GAE"""
-
-    def __init__(
-        self,
-        max_size: int = 10000,
-        obs_shape: Tuple = (4, 84, 84),
-        device: torch.device = None,
-    ):
-        """
-        Inicializa el buffer de experiencias
-
-        Args:
-            max_size: Tamaño máximo
-            obs_shape: Shape de observaciones
-            device: Dispositivo
-        """
-        self.max_size = max_size
-        self.obs_shape = obs_shape
-        self.device = device or torch.device("cpu")
-
-        self.buffer = deque(maxlen=max_size)
+        self.size = 0
+        self.max_priority = 1.0
 
     def add(
         self,
@@ -228,66 +72,66 @@ class ExperienceBuffer:
         reward: float,
         next_obs: np.ndarray,
         done: bool,
+        discount: float,
     ):
-        """Añade una experiencia"""
-        self.buffer.append((obs, action, reward, next_obs, done))
+        self.observations[self.pos] = _as_uint8_observation(obs)
+        self.next_observations[self.pos] = _as_uint8_observation(next_obs)
+        self.actions[self.pos] = int(action)
+        self.rewards[self.pos] = float(reward)
+        self.discounts[self.pos] = float(discount)
+        self.dones[self.pos] = bool(done)
+        self.priorities[self.pos] = self.max_priority
 
-    def sample(self, batch_size: int) -> Tuple:
-        """Muestrea un batch aleatorio"""
-        indices = np.random.randint(0, len(self.buffer), size=batch_size)
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
-        experiences = [self.buffer[i] for i in indices]
+    def beta_by_frame(self, frame_idx: int) -> float:
+        if self.beta_frames <= 0:
+            return 1.0
+        progress = min(max(frame_idx, 0) / self.beta_frames, 1.0)
+        return self.beta_start + progress * (1.0 - self.beta_start)
 
-        obs_list = [exp[0] for exp in experiences]
-        actions_list = [exp[1] for exp in experiences]
-        rewards_list = [exp[2] for exp in experiences]
-        next_obs_list = [exp[3] for exp in experiences]
-        dones_list = [exp[4] for exp in experiences]
+    def sample(self, batch_size: int, beta: float) -> Dict[str, torch.Tensor]:
+        if self.size == 0:
+            raise ValueError("No se puede muestrear de un replay buffer vacio")
 
-        obs = torch.from_numpy(np.stack(obs_list)).to(self.device)
-        actions = torch.from_numpy(np.array(actions_list)).to(self.device)
-        rewards = torch.from_numpy(np.array(rewards_list)).to(self.device)
-        next_obs = torch.from_numpy(np.stack(next_obs_list)).to(self.device)
-        dones = torch.from_numpy(np.array(dones_list)).to(self.device)
+        priorities = self.priorities[: self.size]
+        if self.alpha > 0.0:
+            scaled_priorities = np.power(np.maximum(priorities, self.priority_eps), self.alpha)
+            probabilities = scaled_priorities / scaled_priorities.sum()
+        else:
+            probabilities = np.full((self.size,), 1.0 / self.size, dtype=np.float32)
 
-        return obs, actions, rewards, next_obs, dones
+        indices = np.random.choice(self.size, size=batch_size, replace=True, p=probabilities)
+        sample_probabilities = probabilities[indices]
+        weights = np.power(self.size * sample_probabilities, -beta)
+        weights /= weights.max(initial=1.0)
+
+        return {
+            "obs": _uint8_to_tensor(self.observations[indices], self.device),
+            "actions": torch.from_numpy(self.actions[indices]).to(self.device),
+            "rewards": torch.from_numpy(self.rewards[indices]).to(self.device),
+            "next_obs": _uint8_to_tensor(self.next_observations[indices], self.device),
+            "dones": torch.from_numpy(self.dones[indices].astype(np.float32)).to(self.device),
+            "discounts": torch.from_numpy(self.discounts[indices]).to(self.device),
+            "weights": torch.from_numpy(weights.astype(np.float32)).to(self.device),
+            "indices": indices,
+        }
+
+    def update_priorities(self, indices: np.ndarray, priorities: np.ndarray):
+        priorities = np.asarray(priorities, dtype=np.float32)
+        priorities = np.maximum(priorities, self.priority_eps)
+        self.priorities[indices] = priorities
+        self.max_priority = max(self.max_priority, float(priorities.max(initial=self.max_priority)))
 
     def __len__(self) -> int:
-        """Retorna el tamaño del buffer"""
-        return len(self.buffer)
-
-    def reset(self):
-        """Limpia el buffer"""
-        self.buffer.clear()
+        return self.size
 
 
-def create_rollout_buffer(
-    buffer_size: int,
-    obs_shape: Tuple,
-    num_envs: int = 1,
-    gamma: float = 0.99,
-    gae_lambda: float = 0.95,
-    device: torch.device = None,
-) -> RolloutBuffer:
-    """
-    Factory function para crear un rollout buffer
-
-    Args:
-        buffer_size: Tamaño del buffer
-        obs_shape: Shape de observaciones
-        num_envs: Número de entornos
-        gamma: Factor de descuento
-        gae_lambda: Parámetro lambda para GAE
-        device: Dispositivo
-
-    Returns:
-        RolloutBuffer
-    """
-    return RolloutBuffer(
-        buffer_size=buffer_size,
-        obs_shape=obs_shape,
-        num_envs=num_envs,
-        gamma=gamma,
-        gae_lambda=gae_lambda,
-        device=device,
-    )
+def create_replay_buffer(
+    capacity: int,
+    obs_shape: Tuple[int, ...],
+    device: torch.device,
+    **kwargs,
+) -> PrioritizedReplayBuffer:
+    return PrioritizedReplayBuffer(capacity=capacity, obs_shape=obs_shape, device=device, **kwargs)

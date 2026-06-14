@@ -1,373 +1,134 @@
-# Super Mario Bros PPO Agent
+# Super Mario Bros Dueling DQN Agent
 
-Deep reinforcement learning project for training a PPO agent to play Super Mario Bros. The agent uses a convolutional visual encoder, optional recurrent memory, reward shaping, vectorized environment execution, checkpointing, and evaluation tools.
+Proyecto de reinforcement learning para entrenar un agente Q-learning en Super Mario Bros. La implementacion activa usa Dueling Double DQN con replay priorizado, n-step returns, target network, exploracion epsilon-greedy y Noisy Networks opcional.
 
 ## Overview
 
-This repository implements an end-to-end training pipeline for Super Mario Bros using:
+El pipeline incluye:
 
-- Proximal Policy Optimization (PPO)
-- CNN-based visual feature extraction
-- LSTM memory for temporal context
-- Frame preprocessing, frame skipping, frame stacking, and normalization
-- Reward shaping for progress, coins, enemies, inactivity, death, and level completion
-- Multiprocessing-based vectorized environments
-- CUDA training with mixed precision when available
-- Periodic checkpointing and automatic best-model replacement
-- Evaluation and playback scripts
+- Dueling DQN para estimar `Q(s, a)`
+- Double DQN para reducir sobreestimacion de Q-values
+- Prioritized Experience Replay
+- n-step returns para propagar recompensa mas rapido
+- Target network con actualizacion periodica
+- CNN residual para frames 84x84 apilados
+- Wrappers de frame skip, grayscale, resize, frame stack y normalizacion
+- Reward shaping para progreso, monedas, enemigos, inactividad, muerte y final de nivel
+- Entornos paralelos por multiprocessing
+- Checkpoints, evaluacion, playback y videos
 
-The default training target is World 1-1.
+El objetivo por defecto es World 1-1.
 
-## Current Status
-
-The current pipeline supports:
-
-- Real `gym-super-mario-bros` environments through `nes-py`
-- `SuperMarioBros-*-*-v3` with `SIMPLE_MOVEMENT` action space
-- Parallel rollout collection through a custom `SubprocMarioVectorEnv`
-- GPU training on CUDA devices
-- Automatic saving of:
-  - `outputs/checkpoints/best_model.pt`
-  - `outputs/checkpoints/best_model_metadata.json`
-  - `outputs/checkpoints/best_eval_model.pt`
-  - `outputs/checkpoints/last_checkpoint.pt`
-  - periodic `checkpoint_step_*.pt` files
-
-Gym warnings about the old step API may appear because `gym-super-mario-bros` depends on older Gym APIs. The project includes compatibility wrappers for old and new step/reset formats.
-
-## Repository Structure
+## Estructura
 
 ```text
-super_mario/
+super_mario_agent/
 ├── agents/
-│   ├── memory.py              # Rollout buffer and GAE support
-│   └── ppo_agent.py           # PPO implementation
+│   ├── dqn_agent.py        # Dueling Double DQN + PER + n-step
+│   └── memory.py           # Replay buffer priorizado
 ├── config/
-│   ├── config.py              # Project paths and training config helpers
-│   └── hyperparameters.py     # Training, PPO, model, and device settings
+│   ├── config.py
+│   └── hyperparameters.py  # Configuracion DQN
 ├── env/
-│   ├── mario_env.py           # Single and parallel environment interfaces
-│   ├── mario_simulator.py     # Fallback simulator
-│   ├── reward_shaping.py      # Reward shaping logic
-│   └── wrappers.py            # Frame processing and multiprocessing vector env
+│   ├── mario_env.py
+│   ├── mario_simulator.py
+│   ├── reward_shaping.py
+│   └── wrappers.py
 ├── models/
-│   ├── actor_critic.py        # Actor-critic network
-│   ├── cnn_backbone.py        # CNN feature extractor
-│   ├── distributions.py       # Action distributions
-│   └── recurrent_module.py    # LSTM/GRU modules
+│   ├── cnn_backbone.py
+│   └── dueling_dqn.py
 ├── utils/
-│   ├── checkpoint.py          # Checkpoint save/load utilities
-│   ├── device.py              # CPU/GPU device selection
-│   ├── logger.py              # Metrics logging
-│   ├── metrics.py             # Metrics tracking
-│   └── video_recorder.py      # Video recording
-├── evaluate.py                # Evaluation script
-├── play_agent.py              # Playback script
-├── train.py                   # Main training script
-├── requirements.txt
-└── README.md
+├── train.py
+├── evaluate.py
+├── play_agent.py
+└── main.py
 ```
 
-## Requirements
-
-Recommended environment:
-
-- Python 3.8 or newer
-- NVIDIA GPU with CUDA support for training acceleration
-- PyTorch with CUDA support
-- `gym-super-mario-bros`
-- `nes-py`
-- OpenCV
-- TensorBoard
-
-Install dependencies:
+## Instalacion
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If using Conda, activate your environment before running the commands:
+Dependencias principales:
 
-```bash
-conda activate dqn
-```
+- Python 3.10+
+- PyTorch
+- `gym-super-mario-bros`
+- `nes-py`
+- OpenCV
+- TensorBoard
 
-## GPU Configuration
+## Entrenamiento
 
-The training, evaluation, and playback scripts set:
-
-```python
-CUDA_VISIBLE_DEVICES=0
-```
-
-This is intentional for machines with multiple NVIDIA cards where only one card is compatible with the installed PyTorch/CUDA build. In the current setup this selects the RTX A4000 and hides unsupported Quadro P620 devices.
-
-GPU usage is controlled in `config/hyperparameters.py`:
-
-```python
-USE_GPU = True
-DEVICE_ID = 0
-USE_MIXED_PRECISION = True
-```
-
-At startup, the training script prints the selected device. A correct CUDA run should show a line similar to:
-
-```text
-Dispositivo activo: cuda:0
-Usando GPU: True
-GPU Name: NVIDIA RTX A4000
-```
-
-## Training
-
-Run default training:
+Entrenar con defaults:
 
 ```bash
 python train.py
 ```
 
-Run a specific world and stage:
+Entrenar una etapa concreta:
 
 ```bash
 python train.py --world 1 --stage 1 --total-timesteps 50000000
 ```
 
-Resume from a checkpoint:
+Reanudar:
 
 ```bash
 python train.py --resume outputs/checkpoints/last_checkpoint.pt
 ```
 
-Resume from the best model:
+Tambien puedes usar el CLI:
 
 ```bash
-python train.py --resume outputs/checkpoints/best_model.pt
+python main.py train --world 1 --stage 1 --total-timesteps 50000000
 ```
 
-## Checkpoints and Best Model Saving
-
-The training loop saves the best registered model automatically.
-
-Main files:
-
-- `outputs/checkpoints/best_model.pt`
-  - Replaced whenever the current training score improves.
-  - Intended for quick playback or evaluation.
-
-- `outputs/checkpoints/best_model_metadata.json`
-  - Contains the step, timestamp, score source, and metrics for the best model.
-
-- `outputs/checkpoints/best_eval_model.pt`
-  - Replaced whenever periodic evaluation achieves a new best evaluation score.
-
-- `outputs/checkpoints/last_checkpoint.pt`
-  - Updated whenever a regular checkpoint is saved.
-
-- `outputs/checkpoints/checkpoint_step_*.pt`
-  - Periodic checkpoints kept for recovery.
-
-Periodic checkpointing and evaluation are configured in `config/hyperparameters.py`:
-
-```python
-CHECKPOINT_FREQ = 500_000
-EVAL_FREQ = 50_000
-SAVE_VIDEO_FREQ = 1_000_000
-```
-
-The scheduler triggers when a threshold is crossed, not only when the step count exactly matches the frequency.
-
-## Evaluation
-
-Evaluate a trained checkpoint:
+## Evaluacion
 
 ```bash
 python evaluate.py outputs/checkpoints/best_model.pt --episodes 10
 ```
 
-Evaluate the best evaluation model:
-
-```bash
-python evaluate.py outputs/checkpoints/best_eval_model.pt --episodes 10
-```
-
 ## Playback
-
-Run the trained agent:
 
 ```bash
 python play_agent.py outputs/checkpoints/best_model.pt --episodes 1
 ```
 
-Run and save video:
+Guardar video:
 
 ```bash
 python play_agent.py outputs/checkpoints/best_model.pt --episodes 1 --save-video --fps 30
 ```
 
-## Key Hyperparameters
+## Checkpoints
 
-Edit `config/hyperparameters.py` to change training behavior.
+El entrenamiento guarda:
 
-Environment:
+- `outputs/checkpoints/best_model.pt`
+- `outputs/checkpoints/best_eval_model.pt`
+- `outputs/checkpoints/last_checkpoint.pt`
+- `outputs/checkpoints/checkpoint_step_*.pt`
 
-```python
-WORLD = 1
-STAGE = 1
-FRAME_WIDTH = 84
-FRAME_HEIGHT = 84
-FRAME_STACK = 4
-FRAME_SKIP = 4
-```
+Los checkpoints DQN guardan la Q-network online, la target network, el optimizador y estado de entrenamiento. Checkpoints antiguos de otros algoritmos no son compatibles.
 
-Model:
+## Hiperparametros Clave
+
+Editar `config/hyperparameters.py`.
 
 ```python
-CNN_FEATURES = [32, 64, 64]
-USE_LSTM = True
-LSTM_HIDDEN_DIM = 512
-POLICY_HIDDEN_DIM = 512
-VALUE_HIDDEN_DIM = 512
+REPLAY_BUFFER_SIZE = 150_000
+LEARNING_STARTS = 20_000
+N_STEP_RETURNS = 3
+TARGET_UPDATE_INTERVAL = 10_000
+EPSILON_START = 1.0
+EPSILON_END = 0.02
+USE_NOISY_NETS = True
+COLLECT_STEPS = 128
+GRADIENT_STEPS = 128
+NUM_ENVS_PARALLEL = 8
 ```
 
-PPO:
-
-```python
-LEARNING_RATE = 3e-4
-GAMMA = 0.99
-GAE_LAMBDA = 0.95
-CLIP_RANGE = 0.1
-ENTROPY_COEFF = 0.01
-```
-
-Rollout and optimization:
-
-```python
-NUM_ENVS_PARALLEL = 16
-ROLLOUT_STEPS = 512
-BATCH_SIZE = 128
-EPOCHS_PER_UPDATE = 3
-TOTAL_TIMESTEPS = 50_000_000
-```
-
-## Parallel Environment Execution
-
-The project uses a custom multiprocessing vector environment:
-
-```text
-SubprocMarioVectorEnv
-```
-
-It launches one Mario environment per process and returns batched observations, rewards, done flags, and info dictionaries.
-
-Expected training output:
-
-```text
-[OK] VectorEnv paralelo creado con 16 procesos
-```
-
-If the system cannot create the parallel environment, the code falls back to sequential environments. Sequential execution is significantly slower.
-
-## Monitoring
-
-TensorBoard:
-
-```bash
-tensorboard --logdir outputs/logs
-```
-
-Open:
-
-```text
-http://localhost:6006
-```
-
-Important training metrics:
-
-- `mean_episode_reward`
-- `mean_episode_length`
-- `rollout_mean_reward`
-- `rollout_total_reward`
-- `rollout_completed_episodes`
-- `rollout_steps_per_sec`
-- `policy_loss`
-- `value_loss`
-- `entropy`
-- `approx_kl`
-
-## Troubleshooting
-
-### Training is using CPU
-
-Check `config/hyperparameters.py`:
-
-```python
-USE_GPU = True
-```
-
-Then run:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
-```
-
-### CUDA or cuDNN errors with unsupported GPUs
-
-If the machine has multiple GPUs and some are unsupported by the installed PyTorch build, restrict visible devices before importing PyTorch:
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES="0"
-python train.py
-```
-
-The scripts already set this by default with `os.environ.setdefault`.
-
-### Training is slow
-
-Most rollout time is spent in the emulator, which runs on CPU. Confirm that parallel environments are active:
-
-```text
-[OK] VectorEnv paralelo creado con 16 procesos
-```
-
-If not, reduce or inspect:
-
-```python
-NUM_ENVS_PARALLEL
-ROLLOUT_STEPS
-```
-
-### Best model is not updating
-
-The best model is updated only when the selected score improves. Check:
-
-```text
-outputs/checkpoints/best_model_metadata.json
-```
-
-### Evaluation or playback fails to load a checkpoint
-
-Use one of:
-
-```bash
-python evaluate.py outputs/checkpoints/best_model.pt --episodes 10
-python play_agent.py outputs/checkpoints/best_model.pt --episodes 1
-```
-
-Both scripts support checkpoints that store weights under either `model` or `model_state`.
-
-## References
-
-- Proximal Policy Optimization Algorithms: https://arxiv.org/abs/1707.06347
-- Playing Atari with Deep Reinforcement Learning: https://arxiv.org/abs/1312.5602
-- Generalized Advantage Estimation: https://arxiv.org/abs/1506.02438
-- Deep Residual Learning for Image Recognition: https://arxiv.org/abs/1512.03385
-
-## License
-
-Educational project. Use, modify, and extend according to your academic or research needs.
-
-## Version
-
-- Version: 1.1.0
-- Last updated: 2026-05-06
-- Status: Active development
+Para mas estabilidad en equipos con poca RAM, baja `REPLAY_BUFFER_SIZE`, `NUM_ENVS_PARALLEL` y `BATCH_SIZE`.

@@ -1,23 +1,42 @@
 """
-Script de evaluación del agente entrenado
-Evalúa sin entrenar y genera estadísticas
+Evaluacion de checkpoints Dueling DQN.
 """
 import os
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
-import torch
-import numpy as np
 from pathlib import Path
 from typing import Optional
 import time
 
+import numpy as np
+import torch
+
 from config.config import get_project_paths
-from config.hyperparameters import DEVICE_ID, FRAME_WIDTH, FRAME_STACK, FRAME_SKIP
+from config.hyperparameters import (
+    CNN_FEATURES,
+    CNN_USE_BATCH_NORM,
+    DEVICE_ID,
+    DQN_DUELING_HIDDEN_DIM,
+    DQN_HIDDEN_DIM,
+    FRAME_SKIP,
+    FRAME_STACK,
+    FRAME_WIDTH,
+    NOISY_STD_INIT,
+    USE_LAYER_NORM,
+    USE_NOISY_NETS,
+)
 from utils.device import DeviceManager
 from utils.video_recorder import VideoRecorder
-from env.mario_env import create_environment
-from agents.ppo_agent import create_ppo_agent
-from models.actor_critic import create_actor_critic
+from models.dueling_dqn import create_dueling_dqn
+
+
+def _prepare_obs_tensor(obs: np.ndarray, device: torch.device) -> torch.Tensor:
+    obs_tensor = torch.from_numpy(np.asarray(obs)).to(device=device, dtype=torch.float32).unsqueeze(0)
+    if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in (1, 3, 4):
+        obs_tensor = obs_tensor.permute(0, 3, 1, 2).contiguous()
+    if obs_tensor.max() > 1.0:
+        obs_tensor = obs_tensor / 255.0
+    return obs_tensor
 
 
 def evaluate(
@@ -29,33 +48,21 @@ def evaluate(
     save_videos: bool = True,
     device: Optional[torch.device] = None,
 ):
-    """
-    Evalúa un modelo entrenado
+    """Evalua un checkpoint Dueling DQN sin exploracion."""
 
-    Args:
-        checkpoint_path: Path al checkpoint
-        world: Mundo de Super Mario
-        stage: Etapa del mundo
-        num_episodes: Número de episodios
-        render: Renderizar
-        save_videos: Guardar videos
-        device: Dispositivo
-    """
+    print("=" * 80)
+    print("EVALUACION DEL AGENTE DUELING DQN")
+    print("=" * 80 + "\n")
 
-    print("="*80)
-    print("EVALUACIÓN DEL AGENTE PPO")
-    print("="*80 + "\n")
-
-    # Device
     if device is None:
         device_manager = DeviceManager(use_gpu=True, device_id=DEVICE_ID)
         device = device_manager.get_device()
 
-    # Paths
     project_paths = get_project_paths()
 
-    # Crear entorno
     print(f"Creando entorno: SuperMarioBros-{world}-{stage}...")
+    from env.mario_env import create_environment
+
     eval_env = create_environment(
         world=world,
         stage=stage,
@@ -68,19 +75,19 @@ def evaluate(
         render_mode="rgb_array" if render else None,
     )
 
-    observation_space = eval_env.observation_space
-    action_space = eval_env.action_space
-
-    # Crear modelo
-    print("Cargando modelo...")
-    model = create_actor_critic(
-        observation_space,
-        action_space,
-        cnn_features=[32, 64, 64],
-        lstm_hidden_dim=512,
+    print("Cargando Q-network...")
+    model = create_dueling_dqn(
+        eval_env.observation_space,
+        eval_env.action_space,
+        cnn_features=CNN_FEATURES,
+        hidden_dim=DQN_HIDDEN_DIM,
+        dueling_hidden_dim=DQN_DUELING_HIDDEN_DIM,
+        use_noisy_nets=USE_NOISY_NETS,
+        noisy_std_init=NOISY_STD_INIT,
+        use_batch_norm=CNN_USE_BATCH_NORM,
+        use_layer_norm=USE_LAYER_NORM,
     ).to(device)
 
-    # Cargar checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model_state = checkpoint.get("model_state", checkpoint.get("model"))
     if model_state is None:
@@ -90,13 +97,7 @@ def evaluate(
 
     print(f"Modelo cargado desde: {checkpoint_path}")
 
-    # Video recorder
-    if save_videos:
-        video_recorder = VideoRecorder(project_paths.VIDEOS_DIR)
-    else:
-        video_recorder = None
-
-    # Evaluación
+    video_recorder = VideoRecorder(project_paths.VIDEOS_DIR) if save_videos else None
     episode_rewards = []
     episode_lengths = []
     episode_progresses = []
@@ -109,27 +110,20 @@ def evaluate(
         episode_length = 0
         max_x_pos = 0
         done = False
-        lstm_hidden = None
 
         if video_recorder is not None:
             video_recorder.start_recording(episode)
 
         while not done:
-            # Obtener acción
             with torch.no_grad():
-                obs_tensor = torch.from_numpy(obs).to(device).unsqueeze(0)
-                if obs_tensor.ndim == 4 and obs_tensor.shape[-1] in [1, 3, 4]:
-                    obs_tensor = obs_tensor.permute(0, 3, 1, 2)
-                action, lstm_hidden = model.get_action_deterministic(obs_tensor, lstm_hidden)
-                action = action.cpu().item()
+                q_values = model(_prepare_obs_tensor(obs, device))
+                action = int(q_values.argmax(dim=1).item())
 
             obs, reward, done, info = eval_env.step(action)
-
             episode_reward += reward
             episode_length += 1
             max_x_pos = max(max_x_pos, info.get("x_pos", 0))
 
-            # Renderizar
             if render:
                 frame = eval_env.render()
                 if video_recorder is not None and frame is not None:
@@ -145,16 +139,20 @@ def evaluate(
                 episode_length=episode_length,
             )
 
-        print(f"Episodio {episode+1:2d}: Reward={episode_reward:7.2f}, Length={episode_length:5d}, Progress={max_x_pos:5.1f}")
+        print(
+            f"Episodio {episode + 1:2d}: "
+            f"Reward={episode_reward:7.2f}, "
+            f"Length={episode_length:5d}, "
+            f"Progress={max_x_pos:5.1f}"
+        )
 
-    # Estadísticas
-    print("\n" + "="*80)
-    print("ESTADÍSTICAS DE EVALUACIÓN")
-    print("="*80)
-    print(f"Recompensa Media: {np.mean(episode_rewards):.2f} (±{np.std(episode_rewards):.2f})")
+    print("\n" + "=" * 80)
+    print("ESTADISTICAS DE EVALUACION")
+    print("=" * 80)
+    print(f"Recompensa Media: {np.mean(episode_rewards):.2f} (+/- {np.std(episode_rewards):.2f})")
     print(f"Recompensa Min/Max: {np.min(episode_rewards):.2f} / {np.max(episode_rewards):.2f}")
-    print(f"Duración Media: {np.mean(episode_lengths):.1f} (±{np.std(episode_lengths):.1f})")
-    print(f"Progreso Medio (x_pos): {np.mean(episode_progresses):.1f} (±{np.std(episode_progresses):.1f})")
+    print(f"Duracion Media: {np.mean(episode_lengths):.1f} (+/- {np.std(episode_lengths):.1f})")
+    print(f"Progreso Medio (x_pos): {np.mean(episode_progresses):.1f} (+/- {np.std(episode_progresses):.1f})")
 
     eval_env.close()
 
@@ -162,11 +160,11 @@ def evaluate(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Evalúa un agente PPO entrenado")
+    parser = argparse.ArgumentParser(description="Evalua un agente Dueling DQN entrenado")
     parser.add_argument("checkpoint", type=str, help="Path al checkpoint del modelo")
     parser.add_argument("--world", type=int, default=1, help="Mundo de Super Mario")
     parser.add_argument("--stage", type=int, default=1, help="Etapa del mundo")
-    parser.add_argument("--episodes", type=int, default=10, help="Número de episodios")
+    parser.add_argument("--episodes", type=int, default=10, help="Numero de episodios")
     parser.add_argument("--no-render", action="store_true", help="No renderizar")
     parser.add_argument("--no-videos", action="store_true", help="No guardar videos")
 

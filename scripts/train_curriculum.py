@@ -1,6 +1,6 @@
 """
 Script de entrenamiento por etapas usando curriculum learning
-Entrena primero en niveles fáciles, luego en niveles difíciles
+Entrena primero en niveles faciles, luego en niveles dificiles
 """
 
 from train import train

@@ -4,7 +4,11 @@ Utilidades para grabar videos del agente jugando
 from pathlib import Path
 from typing import Optional
 import numpy as np
-import cv2
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 class VideoRecorder:
@@ -34,6 +38,7 @@ class VideoRecorder:
         self.video_writer = None
         self.frames = []
         self.recording = False
+        self.enabled = cv2 is not None
 
     def start_recording(self, episode_num: int):
         """
@@ -42,6 +47,11 @@ class VideoRecorder:
         Args:
             episode_num: Número del episodio
         """
+        if not self.enabled:
+            print("OpenCV no esta instalado; grabacion de video deshabilitada.")
+            self.recording = False
+            return
+
         self.frames = []
         self.recording = True
         self.current_episode = episode_num
@@ -53,7 +63,7 @@ class VideoRecorder:
         Args:
             frame: Frame como array numpy (H, W, 3) o (H, W)
         """
-        if not self.recording:
+        if not self.recording or not self.enabled:
             return
 
         # Convertir a RGB si es escala de grises
@@ -81,7 +91,7 @@ class VideoRecorder:
         Returns:
             Path al video guardado, o None si no hay frames
         """
-        if not self.recording or not self.frames:
+        if not self.enabled or not self.recording or not self.frames:
             self.recording = False
             return None
 
@@ -132,6 +142,9 @@ class VideoRecorder:
         Returns:
             Path a la imagen guardada
         """
+        if not self.enabled:
+            raise ImportError("OpenCV no esta instalado; no se puede guardar la grilla de frames.")
+
         grid_path = self.output_dir / f"grid_episode_{episode_num:06d}.png"
 
         # Seleccionar frames uniformemente

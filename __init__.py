@@ -1,18 +1,18 @@
 """
-Super Mario Bros - Agente PPO + CNN + LSTM
-Proyecto profesional de Deep Reinforcement Learning
+Super Mario Bros - Agente Dueling DQN
+Proyecto de Deep Reinforcement Learning con Q-learning
 """
 
 __version__ = "1.0.0"
 __author__ = "RL Team"
-__description__ = "Advanced PPO Agent with CNN and LSTM for Super Mario Bros"
+__description__ = "Advanced Dueling DQN Agent for Super Mario Bros"
 
 print("""
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║                  Super Mario Bros - RL Agent (PPO)                        ║
+║                  Super Mario Bros - RL Agent (Dueling DQN)                ║
 ║                                                                           ║
 ║  Agente de Deep Reinforcement Learning para jugar Super Mario Bros      ║
-║  Arquitectura: PPO + CNN Residual + LSTM Recurrente                     ║
+║  Arquitectura: Dueling Double DQN + CNN Residual + Replay Priorizado     ║
 ║                                                                           ║
 ║  Para comenzar:                                                           ║
 ║    python main.py train --help      # Entrenar                           ║
